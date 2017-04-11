@@ -4,11 +4,10 @@
 from __future__ import unicode_literals
 import frappe
 from frappe.utils import cint, flt, cstr, comma_or
-from erpnext.setup.utils import get_company_currency
 from frappe import _, throw
 from erpnext.stock.get_item_details import get_bin_details
 from erpnext.stock.utils import get_incoming_rate
-from erpnext.stock.stock_ledger import get_valuation_rate
+from erpnext.stock.get_item_details import get_conversion_factor
 
 from erpnext.controllers.stock_controller import StockController
 
@@ -34,6 +33,7 @@ class SellingController(StockController):
 		super(SellingController, self).validate()
 		self.validate_max_discount()
 		self.validate_selling_price()
+		self.set_qty_as_per_stock_uom()
 		check_active_sales_items(self)
 
 	def set_missing_values(self, for_validate=False):
@@ -111,13 +111,11 @@ class SellingController(StockController):
 
 	def set_total_in_words(self):
 		from frappe.utils import money_in_words
-		company_currency = get_company_currency(self.company)
-
 		disable_rounded_total = cint(frappe.db.get_value("Global Defaults", None, "disable_rounded_total"))
 
 		if self.meta.get_field("base_in_words"):
 			self.base_in_words = money_in_words(disable_rounded_total and
-				abs(self.base_grand_total) or abs(self.base_rounded_total), company_currency)
+				abs(self.base_grand_total) or abs(self.base_rounded_total), self.company_currency)
 		if self.meta.get_field("in_words"):
 			self.in_words = money_in_words(disable_rounded_total and
 				abs(self.grand_total) or abs(self.rounded_total), self.currency)
@@ -162,6 +160,13 @@ class SellingController(StockController):
 
 			if discount and flt(d.discount_percentage) > discount:
 				frappe.throw(_("Maxiumm discount for Item {0} is {1}%").format(d.item_code, discount))
+
+	def set_qty_as_per_stock_uom(self):
+		for d in self.get("items"):
+			if d.meta.get_field("stock_qty"):
+				if not d.conversion_factor:
+					frappe.throw(_("Row {0}: Conversion Factor is mandatory").format(d.idx))
+				d.stock_qty = flt(d.qty) * flt(d.conversion_factor)
 
 	def validate_selling_price(self):
 		def throw_message(item_name, rate, ref_rate_field):
@@ -211,9 +216,10 @@ class SellingController(StockController):
 				il.append(frappe._dict({
 					'warehouse': d.warehouse,
 					'item_code': d.item_code,
-					'qty': d.qty,
-					'uom': d.stock_uom,
+					'qty': d.stock_qty,
+					'uom': d.uom,
 					'stock_uom': d.stock_uom,
+					'conversion_factor': d.conversion_factor,
 					'batch_no': cstr(d.get("batch_no")).strip(),
 					'serial_no': cstr(d.get("serial_no")).strip(),
 					'name': d.name,
@@ -282,6 +288,8 @@ class SellingController(StockController):
 		sl_entries = []
 		for d in self.get_item_list():
 			if frappe.db.get_value("Item", d.item_code, "is_stock_item") == 1 and flt(d.qty):
+				if flt(d.conversion_factor)==0.0:
+					d.conversion_factor = get_conversion_factor(d.item_code, d.uom).get("conversion_factor") or 1.0
 				return_rate = 0
 				if cint(self.is_return) and self.return_against and self.docstatus==1:
 					return_rate = self.get_incoming_rate_for_sales_return(d.item_code, self.return_against)
