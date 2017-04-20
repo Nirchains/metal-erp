@@ -32,7 +32,7 @@ def get_pos_data():
 		'doc': doc,
 		'default_customer': pos_profile.get('customer'),
 		'items': get_items_list(pos_profile),
-		'item_groups': get_item_group(pos_profile),
+		'item_groups': get_item_groups(pos_profile),
 		'customers': customers,
 		'address': get_customers_address(customers),
 		'serial_no_data': get_serial_no_data(pos_profile, doc.company),
@@ -132,7 +132,7 @@ def get_items_list(pos_profile):
 	if pos_profile.get('item_groups'):
 		# Get items based on the item groups defined in the POS profile
 		for d in pos_profile.get('item_groups'):
-			item_groups.extend(get_child_nodes('Item Group', d.item_group))
+			item_groups.extend([d.name for d in get_child_nodes('Item Group', d.item_group)])
 		cond = "item_group in (%s)"%(', '.join(['%s']*len(item_groups)))
 
 	return frappe.db.sql(""" 
@@ -146,14 +146,19 @@ def get_items_list(pos_profile):
 			disabled = 0 and has_variants = 0 and is_sales_item = 1 and {cond}
 		""".format(cond=cond), tuple(item_groups), as_dict=1)
 
-def get_item_group(pos_profile):
+def get_item_groups(pos_profile):
+	item_group_dict = {}
 	if pos_profile.get('item_groups'):
 		item_groups = []
 		for d in pos_profile.get('item_groups'):
 			item_groups.extend(get_child_nodes('Item Group', d.item_group))
-		return item_groups
 	else:
-		return frappe.db.sql_list("""Select name from `tabItem Group` order by name""")
+		item_groups = frappe.db.sql("""Select name,
+			lft, rgt from `tabItem Group` order by lft""", as_dict=1)
+
+	for data in item_groups:
+		item_group_dict[data.name] = [data.lft, data.rgt]
+	return item_group_dict
 
 def get_customers_list(pos_profile):
 	cond = "1=1"
@@ -161,7 +166,7 @@ def get_customers_list(pos_profile):
 	if pos_profile.get('customer_groups'):
 		# Get customers based on the customer groups defined in the POS profile
 		for d in pos_profile.get('customer_groups'):
-			customer_groups.extend(get_child_nodes('Customer Group', d.customer_group))
+			customer_groups.extend([d.name for d in get_child_nodes('Customer Group', d.customer_group)])
 		cond = "customer_group in (%s)"%(', '.join(['%s']*len(customer_groups)))
 
 	return frappe.db.sql(""" select name, customer_name, customer_group,
@@ -187,8 +192,8 @@ def get_customers_address(customers):
 
 def get_child_nodes(group_type, root):
 	lft, rgt = frappe.db.get_value(group_type, root, ["lft", "rgt"])
-	return frappe.db.sql_list(""" Select name from `tab{tab}` where
-			lft >= {lft} and rgt <= {rgt}""".format(tab=group_type, lft=lft, rgt=rgt))
+	return frappe.db.sql(""" Select name, lft, rgt from `tab{tab}` where
+			lft >= {lft} and rgt <= {rgt} order by lft""".format(tab=group_type, lft=lft, rgt=rgt), as_dict=1)
 
 def get_serial_no_data(pos_profile, company):
 	# get itemwise serial no data
@@ -296,9 +301,9 @@ def make_invoice(doc_list={}, email_queue_list={}, customers_list={}):
 			if not frappe.db.exists('Sales Invoice', {'offline_pos_name': name}):
 				validate_records(doc)
 				si_doc = frappe.new_doc('Sales Invoice')
-				si_doc.due_date = doc.get('posting_date')
 				si_doc.offline_pos_name = name
 				si_doc.update(doc)
+				si_doc.due_date = doc.get('posting_date')
 				submit_invoice(si_doc, name, doc)
 				name_list.append(name)
 			else:
@@ -404,4 +409,5 @@ def save_invoice(e, si_doc, name):
 	if not frappe.db.exists('Sales Invoice', {'offline_pos_name': name}):
 		si_doc.docstatus = 0
 		si_doc.flags.ignore_mandatory = True
+		si_doc.due_date = si_doc.posting_date
 		si_doc.insert()

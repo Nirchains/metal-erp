@@ -159,9 +159,8 @@ def get_basic_details(args, item):
 			item.get("taxes")))),
 		"uom": item.stock_uom,
 		"min_order_qty": flt(item.min_order_qty) if args.doctype == "Material Request" else "",
-		"conversion_factor": 1.0,
 		"qty": args.qty or 1.0,
-		"stock_qty": 1.0,
+		"stock_qty": args.qty or 1.0,
 		"price_list_rate": 0.0,
 		"base_price_list_rate": 0.0,
 		"rate": 0.0,
@@ -172,9 +171,20 @@ def get_basic_details(args, item):
 		"net_amount": 0.0,
 		"discount_percentage": 0.0,
 		"supplier": item.default_supplier,
+		"update_stock": args.get("update_stock") if args.get('doctype') in ['Sales Invoice', 'Purchase Invoice'] else 0,
 		"delivered_by_supplier": item.delivered_by_supplier if args.get("doctype") in ["Sales Order", "Sales Invoice"] else 0,
 		"is_fixed_asset": item.is_fixed_asset
 	})
+
+	# calculate conversion factor
+	if item.stock_uom == args.uom:
+		out.conversion_factor = 1.0
+	else:
+		out.conversion_factor = args.conversion_factor or \
+			get_conversion_factor(item.item_code, args.uom).get("conversion_factor")  or 1.0
+
+	args.conversion_factor = out.conversion_factor
+	out.stock_qty = out.qty * out.conversion_factor
 
 	# if default specified in item is for another company, fetch from company
 	for d in [["Account", "income_account", "default_income_account"],
@@ -227,6 +237,8 @@ def get_price_list_rate(args, item_doc, out):
 		out.price_list_rate = flt(price_list_rate) * flt(args.plc_conversion_rate) \
 			/ flt(args.conversion_rate)
 
+		out.price_list_rate = flt(out.price_list_rate * (args.conversion_factor or 1.0))
+
 		if not out.price_list_rate and args.transaction_type=="buying":
 			from erpnext.stock.doctype.item.item import get_last_purchase_details
 			out.update(get_last_purchase_details(item_doc.name,
@@ -270,7 +282,7 @@ def validate_price_list(args):
 		if not frappe.db.get_value("Price List",
 			{"name": args.price_list, args.transaction_type: 1, "enabled": 1}):
 			throw(_("Price List {0} is disabled or does not exist").format(args.price_list))
-	else:
+	elif not args.get("supplier"):
 		throw(_("Price List not selected"))
 
 def validate_conversion_rate(args, meta):
@@ -531,6 +543,9 @@ def get_serial_no(args):
 	if isinstance(args, basestring):
 		args = json.loads(args)
 		args = frappe._dict(args)
+
+	if args.get('doctype') == 'Sales Invoice' and not args.get('update_stock'):
+		return ""
 
 	if args.get('warehouse') and args.get('stock_qty') and args.get('item_code'):
 
