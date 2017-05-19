@@ -78,8 +78,16 @@ erpnext.pos.PointOfSale = erpnext.taxes_and_totals.extend({
 
 	make_menu_list: function () {
 		var me = this;
-
 		this.page.clear_menu();
+
+		// for mobile
+		this.page.add_menu_item(__("Pay"), function () {
+			me.validate();
+			me.update_paid_amount_status(true);
+			me.create_invoice();
+			me.make_payment();
+		}).addClass('visible-xs');
+
 		this.page.add_menu_item(__("New Sales Invoice"), function () {
 			me.save_previous_entry();
 			me.create_new();
@@ -327,6 +335,7 @@ erpnext.pos.PointOfSale = erpnext.taxes_and_totals.extend({
 		this.name = null;
 		this.load_data(true);
 		this.setup();
+		this.set_default_customer()
 	},
 
 	load_data: function (load_doc) {
@@ -357,6 +366,16 @@ erpnext.pos.PointOfSale = erpnext.taxes_and_totals.extend({
 		this.party_field.$input.attr('disabled', false);
 		if(this.selected_row) {
 			this.selected_row.hide()
+		}
+	},
+
+	set_default_customer: function() {
+		if (this.default_customer && !this.frm.doc.customer) {
+			this.party_field.$input.val(this.default_customer);
+			this.frm.doc.customer = this.default_customer;
+			this.numeric_keypad.show();
+			this.toggle_list_customer(false)
+			this.toggle_item_cart(true)
 		}
 	},
 
@@ -675,11 +694,6 @@ erpnext.pos.PointOfSale = erpnext.taxes_and_totals.extend({
 			me.toggle_delete_button();
 		}
 
-		if (this.default_customer && !this.frm.doc.customer) {
-			this.party_field.$input.val(this.default_customer);
-			this.frm.doc.customer = this.default_customer;
-		}
-
 		this.party_field.awesomeplete =
 			new Awesomplete(this.party_field.$input.get(0), {
 				minChars: 0,
@@ -782,7 +796,8 @@ erpnext.pos.PointOfSale = erpnext.taxes_and_totals.extend({
 
 	add_customer: function() {
 		this.frm.doc.customer = "";
-		this.update_customer(true)
+		this.update_customer(true);
+		this.numeric_keypad.show();
 	},
 
 	update_customer: function (new_customer) {
@@ -860,6 +875,7 @@ erpnext.pos.PointOfSale = erpnext.taxes_and_totals.extend({
 		this.customer_doc.set_primary_action(__("Save"), function () {
 			me.make_offline_customer(new_customer);
 			me.pos_bill.show();
+			me.list_customers.hide();
 		});
 	},
 
