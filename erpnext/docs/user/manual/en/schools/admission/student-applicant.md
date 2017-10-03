@@ -3,7 +3,7 @@
 A Student Applicant record needs to be created when a student applies for a program at your institute.
 You can Approve or Reject a student applicant. By accepting a student applicant you can add them to the student master.
 
-<img class="screenshot" alt="Student Applicant" src="{{url_prefix}}/assets/img/schools/admission/student-applicant.png">
+<img class="screenshot" alt="Student Applicant" src="/docs/assets/img/schools/admission/student-applicant.png">
 
 ### Application Status
 
@@ -18,11 +18,13 @@ You can Approve or Reject a student applicant. By accepting a student applicant 
 	and will not allow you to change the application status unless the student record is deleted.
 
 ### Student Enrollment
+Once the form is submitted you can either approve or reject the application form.
 
+<img class="screenshot" alt="Student Applicant Enrollment" src="/docs/assets/img/schools/admission/student-application-actions.png">
 
 Once you approve a Student Applicant you can enroll them to a program. When you click the 'Enroll' buttom,
-the system shall create a student against that applicant and redirect you to the [Program Enrollment form]({{docs_base_url}}/user/manual/en/schools/student/program-enrollment.html).
+the system shall create a student against that applicant and redirect you to the [Program Enrollment form](/docs/user/manual/en/schools/student/program-enrollment.html).
 
-<img class="screenshot" alt="Student Applicant Enrollment" src="{{url_prefix}}/assets/img/schools/admission/student-applicant-enroll.png">
+<img class="screenshot" alt="Student Applicant Enrollment" src="/docs/assets/img/schools/admission/student-applicant-enroll.png">
 
 {next}

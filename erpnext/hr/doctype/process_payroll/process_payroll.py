@@ -3,7 +3,8 @@
 
 from __future__ import unicode_literals
 import frappe
-from frappe.utils import cint, flt, nowdate, add_days, getdate, fmt_money
+from dateutil.relativedelta import relativedelta
+from frappe.utils import cint, flt, nowdate, add_days, getdate, fmt_money, add_to_date, DATE_FORMAT
 from frappe import _
 from erpnext.accounts.utils import get_fiscal_year
 
@@ -47,7 +48,6 @@ class ProcessPayroll(Document):
 			%s """% cond, {"sal_struct": sal_struct})
 			return emp_list
 
-
 	def get_filter_condition(self):
 		self.check_mandatory()
 
@@ -58,14 +58,12 @@ class ProcessPayroll(Document):
 
 		return cond
 
-
 	def get_joining_releiving_condition(self):
 		cond = """
 			and ifnull(t1.date_of_joining, '0000-00-00') <= '%(end_date)s'
 			and ifnull(t1.relieving_date, '2199-12-31') >= '%(start_date)s'
 		""" % {"start_date": self.start_date, "end_date": self.end_date}
 		return cond
-
 
 	def check_mandatory(self):
 		for fieldname in ['company', 'start_date', 'end_date']:
@@ -110,7 +108,6 @@ class ProcessPayroll(Document):
 					ss_list.append(ss_dict)
 		return self.create_log(ss_list)
 
-
 	def create_log(self, ss_list):
 		if not ss_list or len(ss_list) < 1: 
 			log = "<p>" + _("No employee for the above selected criteria OR salary slip already created") + "</p>"
@@ -133,7 +130,6 @@ class ProcessPayroll(Document):
 			and (t1.journal_entry is null or t1.journal_entry = "") and ifnull(salary_slip_based_on_timesheet,0) = %s %s
 		""" % ('%s', '%s', '%s','%s', cond), (ss_status, self.start_date, self.end_date, self.salary_slip_based_on_timesheet), as_dict=as_dict)
 		return ss_list
-
 
 	def submit_salary_slips(self):
 		"""
@@ -193,7 +189,6 @@ class ProcessPayroll(Document):
 
 	def format_as_links(self, salary_slip):
 		return ['<a href="#Form/Salary Slip/{0}">{0}</a>'.format(salary_slip)]
-
 
 	def get_total_salary_and_loan_amounts(self):
 		"""
@@ -257,7 +252,6 @@ class ProcessPayroll(Document):
 
 		return payroll_payable_account	
 
-
 	def make_accural_jv_entry(self):
 		self.check_permission('write')
 		earnings = self.get_salary_component_total(component_type = "earnings") or {}
@@ -266,86 +260,103 @@ class ProcessPayroll(Document):
 		loan_amounts = self.get_total_salary_and_loan_amounts()
 		loan_accounts = self.get_loan_accounts()
 		jv_name = ""
+		precision = frappe.get_precision("Journal Entry Account", "debit_in_account_currency")
 
 		if earnings or deductions:
 			journal_entry = frappe.new_doc('Journal Entry')
 			journal_entry.voucher_type = 'Journal Entry'
-			journal_entry.user_remark = _('Accural Journal Entry for salaries from {0} to {1}').format(self.start_date,
-				self.end_date)
+			journal_entry.user_remark = _('Accural Journal Entry for salaries from {0} to {1}')\
+				.format(self.start_date, self.end_date)
 			journal_entry.company = self.company
 			journal_entry.posting_date = nowdate()
 
-			account_amt_list = []
-			adjustment_amt = 0
-			for acc, amt in earnings.items():
-				adjustment_amt = adjustment_amt+amt
-				account_amt_list.append({
+			accounts = []
+			payable_amount = 0
+
+			# Earnings
+			for acc, amount in earnings.items():
+				payable_amount += flt(amount, precision)
+				accounts.append({
 						"account": acc,
-						"debit_in_account_currency": amt,
+						"debit_in_account_currency": flt(amount, precision),
 						"cost_center": self.cost_center,
 						"project": self.project
 					})
+
+			# Deductions
 			for acc, amt in deductions.items():
-				adjustment_amt = adjustment_amt-amt
-				account_amt_list.append({
+				payable_amount -= flt(amount, precision)
+				accounts.append({
 						"account": acc,
-						"credit_in_account_currency": amt,
+						"credit_in_account_currency": flt(amount, precision),
 						"cost_center": self.cost_center,
 						"project": self.project
 					})
-			#employee loan
+
+			# Employee loan
 			if loan_amounts.total_loan_repayment:
-				account_amt_list.append({
+				accounts.append({
 						"account": loan_accounts.employee_loan_account,
 						"credit_in_account_currency": loan_amounts.total_principal_amount
 					})
-				account_amt_list.append({
+				accounts.append({
 						"account": loan_accounts.interest_income_account,
 						"credit_in_account_currency": loan_amounts.total_interest_amount,
 						"cost_center": self.cost_center,
 						"project": self.project
 					})
-				adjustment_amt = adjustment_amt-(loan_amounts.total_loan_repayment)
-			
-			account_amt_list.append({
-					"account": default_payroll_payable_account,
-					"credit_in_account_currency": adjustment_amt
-				})
-			journal_entry.set("accounts", account_amt_list)
+				payable_amount -= flt(loan_amounts.total_loan_repayment, precision)
+
+			# Payable amount
+			accounts.append({
+				"account": default_payroll_payable_account,
+				"credit_in_account_currency": flt(payable_amount, precision)
+			})
+
+			journal_entry.set("accounts", accounts)
 			journal_entry.save()
+
 			try:
 				journal_entry.submit()
 				jv_name = journal_entry.name
 				self.update_salary_slip_status(jv_name = jv_name)
-			except Exception, e:
+			except Exception as e:
 				frappe.msgprint(e)
+
 		return jv_name
 
 	def make_payment_entry(self):
 		self.check_permission('write')
 		total_salary_amount = self.get_total_salary_and_loan_amounts()
 		default_payroll_payable_account = self.get_default_payroll_payable_account()
+		precision = frappe.get_precision("Journal Entry Account", "debit_in_account_currency")
 
 		if total_salary_amount.rounded_total:
 			journal_entry = frappe.new_doc('Journal Entry')
 			journal_entry.voucher_type = 'Bank Entry'
-			journal_entry.user_remark = _('Payment of salary from {0} to {1}').format(self.start_date,
-				self.end_date)
+			journal_entry.user_remark = _('Payment of salary from {0} to {1}')\
+				.format(self.start_date, self.end_date)
 			journal_entry.company = self.company
 			journal_entry.posting_date = nowdate()
 
-			account_amt_list = []
-		
-			account_amt_list.append({
+			payment_amount = flt(total_salary_amount.rounded_total, precision)
+
+			journal_entry.set("accounts", [
+				{
 					"account": self.payment_account,
-					"credit_in_account_currency": total_salary_amount.rounded_total
-				})
-			account_amt_list.append({
+					"credit_in_account_currency": payment_amount
+				},
+				{
 					"account": default_payroll_payable_account,
-					"debit_in_account_currency": total_salary_amount.rounded_total
-				})	
-			journal_entry.set("accounts", account_amt_list)
-		return journal_entry.as_dict()
+					"debit_in_account_currency": payment_amount
+				}
+			])
+			return journal_entry.as_dict()
+		else:
+			frappe.msgprint(
+				_("There are no submitted Salary Slips to process."),
+				title="Error", indicator="red"
+			)
 
 	def update_salary_slip_status(self, jv_name = None):
 		ss_list = self.get_sal_slip_list(ss_status=1)
@@ -357,7 +368,6 @@ class ProcessPayroll(Document):
 	def set_start_end_dates(self):
 		self.update(get_start_end_dates(self.payroll_frequency, 
 			self.start_date or self.posting_date, self.company))
-
 
 @frappe.whitelist()
 def get_start_end_dates(payroll_frequency, start_date=None, company=None):
@@ -390,6 +400,29 @@ def get_start_end_dates(payroll_frequency, start_date=None, company=None):
 	return frappe._dict({
 		'start_date': start_date, 'end_date': end_date
 	})
+
+def get_frequency_kwargs(frequency_name):
+	frequency_dict = {
+		'monthly': {'months': 1},
+		'fortnightly': {'days': 14},
+		'weekly': {'days': 7},
+		'daily': {'days': 1}
+	}
+	return frequency_dict.get(frequency_name)
+
+@frappe.whitelist()
+def get_end_date(start_date, frequency):
+	start_date = getdate(start_date)
+	frequency = frequency.lower() if frequency else 'monthly'
+	kwargs = get_frequency_kwargs(frequency) if frequency != 'bimonthly' else get_frequency_kwargs('monthly')
+
+	# weekly, fortnightly and daily intervals have fixed days so no problems
+	end_date = add_to_date(start_date, **kwargs) - relativedelta(days=1)
+	if frequency != 'bimonthly':
+		return dict(end_date=end_date.strftime(DATE_FORMAT))
+
+	else:
+		return dict(end_date='')
 
 def get_month_details(year, month):
 	ysd = frappe.db.get_value("Fiscal Year", year, "year_start_date")

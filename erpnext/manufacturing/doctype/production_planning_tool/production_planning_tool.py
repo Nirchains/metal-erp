@@ -321,7 +321,7 @@ class ProductionPlanningTool(Document):
 				# get all raw materials with sub assembly childs
 				# Did not use qty_consumed_per_unit in the query, as it leads to rounding loss
 				for d in frappe.db.sql("""select fb.item_code,
-					ifnull(sum(fb.qty/ifnull(bom.quantity, 1)), 0) as qty,
+					ifnull(sum(fb.stock_qty/ifnull(bom.quantity, 1)), 0) as qty,
 					fb.description, fb.stock_uom, item.min_order_qty
 					from `tabBOM Explosion Item` fb, `tabBOM` bom, `tabItem` item
 					where bom.name = fb.parent and item.name = fb.item_code
@@ -348,7 +348,7 @@ class ProductionPlanningTool(Document):
 			SELECT
 				bom_item.item_code,
 				default_material_request_type,
-				ifnull(%(parent_qty)s * sum(bom_item.qty/ifnull(bom.quantity, 1)), 0) as qty,
+				ifnull(%(parent_qty)s * sum(bom_item.stock_qty/ifnull(bom.quantity, 1)), 0) as qty,
 				item.is_sub_contracted_item as is_sub_contracted,
 				item.default_bom as default_bom,
 				bom_item.description as description,
@@ -376,19 +376,20 @@ class ProductionPlanningTool(Document):
 				else:
 					bom_wise_item_details[d.item_code] = d
 
-			if include_sublevel:
+			if include_sublevel and d.default_bom:
 				if ((d.default_material_request_type == "Purchase" and d.is_sub_contracted and supply_subs)
 					or (d.default_material_request_type == "Manufacture")):
 
 					my_qty = 0
 					projected_qty = self.get_item_projected_qty(d.item_code)
-
 					if self.create_material_requests_for_all_required_qty:
 						my_qty = d.qty
-					elif (bom_wise_item_details[d.item_code].qty - d.qty) < projected_qty:
-						my_qty = bom_wise_item_details[d.item_code].qty - projected_qty
 					else:
-						my_qty = d.qty
+						total_required_qty = flt(bom_wise_item_details.get(d.item_code, frappe._dict()).qty)
+						if (total_required_qty - d.qty) < projected_qty:
+							my_qty = total_required_qty - projected_qty
+						else:
+							my_qty = d.qty
 
 					if my_qty > 0:
 						self.get_subitems(bom_wise_item_details,
@@ -483,14 +484,15 @@ class ProductionPlanningTool(Document):
 		return items_to_be_requested
 
 	def get_item_projected_qty(self,item):
+		conditions = ""
+		if self.purchase_request_for_warehouse:
+			conditions = " and warehouse='{0}'".format(frappe.db.escape(self.purchase_request_for_warehouse))
+
 		item_projected_qty = frappe.db.sql("""
 			select ifnull(sum(projected_qty),0) as qty
 			from `tabBin`
-			where item_code = %(item_code)s and warehouse=%(warehouse)s
-		""", {
-			"item_code": item,
-			"warehouse": self.purchase_request_for_warehouse
-		}, as_dict=1)
+			where item_code = %(item_code)s {conditions}
+		""".format(conditions=conditions), { "item_code": item }, as_dict=1)
 
 		return item_projected_qty[0].qty
 

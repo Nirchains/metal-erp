@@ -16,6 +16,8 @@ from erpnext.controllers.stock_controller import StockController
 class BuyingController(StockController):
 	def __setup__(self):
 		if hasattr(self, "taxes"):
+			self.flags.print_taxes_with_zero_amount = cint(frappe.db.get_single_value("Print Settings",
+				 "print_taxes_with_zero_amount"))
 			self.print_templates = {
 				"taxes": "templates/print_formats/includes/taxes.html"
 			}
@@ -73,17 +75,22 @@ class BuyingController(StockController):
 
 	def validate_stock_or_nonstock_items(self):
 		if self.meta.get_field("taxes") and not self.get_stock_items():
-			tax_for_valuation = [d.account_head for d in self.get("taxes")
+			tax_for_valuation = [d for d in self.get("taxes")
 				if d.category in ["Valuation", "Valuation and Total"]]
+
 			if tax_for_valuation:
-				frappe.throw(_("Tax Category can not be 'Valuation' or 'Valuation and Total' as all items are non-stock items"))
+				for d in tax_for_valuation:
+					d.category = 'Total'
+				msgprint(_('Tax Category has been changed to "Total" because all the Items are non-stock items'))
 
 	def set_landed_cost_voucher_amount(self):
 		for d in self.get("items"):
-			lc_voucher_amount = frappe.db.sql("""select sum(applicable_charges)
+			lc_voucher_data = frappe.db.sql("""select sum(applicable_charges), cost_center
 				from `tabLanded Cost Item`
 				where docstatus = 1 and purchase_receipt_item = %s""", d.name)
-			d.landed_cost_voucher_amount = lc_voucher_amount[0][0] if lc_voucher_amount else 0.0
+			d.landed_cost_voucher_amount = lc_voucher_data[0][0] if lc_voucher_data else 0.0
+			if not d.cost_center and lc_voucher_data and lc_voucher_data[0][1]:
+				d.db_set('cost_center', lc_voucher_data[0][1])
 
 	def set_total_in_words(self):
 		from frappe.utils import money_in_words
@@ -224,7 +231,7 @@ class BuyingController(StockController):
 				})
 				if not rm.rate:
 					rm.rate = get_valuation_rate(bom_item.item_code, self.supplier_warehouse,
-						self.doctype, self.name, currency=self.company_currency)
+						self.doctype, self.name, currency=self.company_currency, company = self.company)
 			else:
 				rm.rate = bom_item.rate
 
@@ -252,7 +259,7 @@ class BuyingController(StockController):
 
 	def get_items_from_bom(self, item_code, bom):
 		bom_items = frappe.db.sql("""select t2.item_code,
-			t2.qty / ifnull(t1.quantity, 1) as qty_consumed_per_unit,
+			t2.stock_qty / ifnull(t1.quantity, 1) as qty_consumed_per_unit,
 			t2.rate, t2.stock_uom, t2.name, t2.description
 			from `tabBOM` t1, `tabBOM Item` t2, tabItem t3
 			where t2.parent = t1.name and t1.item = %s

@@ -33,7 +33,22 @@ frappe.ui.form.on("Purchase Receipt", {
 			}
 		});
 
-	}
+	},
+
+	refresh: function(frm) {
+		if(frm.doc.company) {
+			frm.trigger("toggle_display_account_head");
+		}
+	},
+
+	company: function(frm) {
+		frm.trigger("toggle_display_account_head");
+	},
+
+	toggle_display_account_head: function(frm) {
+		var enabled = erpnext.is_perpetual_inventory_enabled(frm.doc.company)
+		frm.fields_dict["items"].grid.set_column_disp(["cost_center"], enabled);
+	},
 });
 
 erpnext.stock.PurchaseReceiptController = erpnext.buying.BuyingController.extend({
@@ -47,15 +62,15 @@ erpnext.stock.PurchaseReceiptController = erpnext.buying.BuyingController.extend
 		this._super();
 		if(this.frm.doc.docstatus===1) {
 			this.show_stock_ledger();
-			if (cint(frappe.defaults.get_default("auto_accounting_for_stock"))) {
+			if (erpnext.is_perpetual_inventory_enabled(this.frm.doc.company)) {
 				this.show_general_ledger();
 			}
 		}
 
 		if(!this.frm.doc.is_return && this.frm.doc.status!="Closed") {
-			if(this.frm.doc.docstatus==0) {
+			if (this.frm.doc.docstatus == 0) {
 				this.frm.add_custom_button(__('Purchase Order'),
-					function() {
+					function () {
 						erpnext.utils.map_current_doc({
 							method: "erpnext.buying.doctype.purchase_order.purchase_order.make_purchase_receipt",
 							source_doctype: "Purchase Order",
@@ -70,7 +85,7 @@ erpnext.stock.PurchaseReceiptController = erpnext.buying.BuyingController.extend
 								company: me.frm.doc.company
 							}
 						})
-				}, __("Get items from"));
+					}, __("Get items from"));
 			}
 
 			if(this.frm.doc.docstatus == 1 && this.frm.doc.status!="Closed") {
@@ -83,6 +98,13 @@ erpnext.stock.PurchaseReceiptController = erpnext.buying.BuyingController.extend
 				if(flt(this.frm.doc.per_billed) < 100) {
 					cur_frm.add_custom_button(__('Invoice'), this.make_purchase_invoice, __("Make"));
 				}
+
+				if(!this.frm.doc.subscription) {
+					cur_frm.add_custom_button(__('Subscription'), function() {
+						erpnext.utils.make_subscription(me.frm.doc.doctype, me.frm.doc.name)
+					}, __("Make"))
+				}
+
 				cur_frm.page.set_inner_btn_group_as_primary(__("Make"));
 			}
 		}
@@ -143,17 +165,6 @@ cur_frm.fields_dict['items'].grid.get_field('project').get_query = function(doc,
 			['Project', 'status', 'not in', 'Completed, Cancelled']
 		]
 	}
-}
-
-cur_frm.fields_dict['items'].grid.get_field('batch_no').get_query= function(doc, cdt, cdn) {
-	var d = locals[cdt][cdn];
-	if(d.item_code) {
-		return {
-			filters: {'item': d.item_code}
-		}
-	}
-	else
-		msgprint(__("Please enter Item Code."));
 }
 
 cur_frm.cscript.select_print_heading = function(doc, cdt, cdn) {

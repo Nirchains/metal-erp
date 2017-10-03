@@ -74,12 +74,12 @@ def get_item_details(args):
 
 	out.update(get_pricing_rule_for_item(args))
 
-	if (args.get("doctype") == "Delivery Note" or 
+	if (args.get("doctype") == "Delivery Note" or
 		(args.get("doctype") == "Sales Invoice" and args.get('update_stock'))) \
 		and out.warehouse and out.stock_qty > 0:
-		
+
 		if out.has_serial_no:
-			out.serial_no = get_serial_no(out)
+			out.serial_no = get_serial_no(out, args.serial_no)
 
 		if out.has_batch_no and not args.get("batch_no"):
 			out.batch_no = get_batch_no(out.item_code, out.warehouse, out.qty)
@@ -90,11 +90,21 @@ def get_item_details(args):
 			item.lead_time_days)
 
 	if args.get("is_subcontracted") == "Yes":
-		out.bom = get_default_bom(args.item_code)
+		out.bom = args.get('bom') or get_default_bom(args.item_code)
 
 	get_gross_profit(out)
 
 	return out
+
+	# print(frappe._dict({
+	# 	'has_serial_no'	: out.has_serial_no,
+	# 	'has_batch_no'	: out.has_batch_no
+	# }))
+
+	# return frappe._dict({
+	# 	'has_serial_no'	: out.has_serial_no,
+	# 	'has_batch_no'	: out.has_batch_no
+	# })
 
 def process_args(args):
 	if isinstance(args, basestring):
@@ -233,7 +243,8 @@ def get_price_list_rate(args, item_doc, out):
 
 	if meta.get_field("currency"):
 		validate_price_list(args)
-		validate_conversion_rate(args, meta)
+		if args.price_list:
+			validate_conversion_rate(args, meta)
 
 		price_list_rate = get_price_list_rate_for(args.price_list, item_doc.name)
 
@@ -543,7 +554,8 @@ def get_gross_profit(out):
 	return out
 
 @frappe.whitelist()
-def get_serial_no(args):
+def get_serial_no(args, serial_nos=None):
+	serial_no = None
 	if isinstance(args, basestring):
 		args = json.loads(args)
 		args = frappe._dict(args)
@@ -557,4 +569,9 @@ def get_serial_no(args):
 			args = json.dumps({"item_code": args.get('item_code'),"warehouse": args.get('warehouse'),"stock_qty": args.get('stock_qty')})
 			args = process_args(args)
 			serial_no = get_serial_nos_by_fifo(args)
-			return serial_no
+
+	if not serial_no and serial_nos:
+		# For POS
+		serial_no = serial_nos
+
+	return serial_no

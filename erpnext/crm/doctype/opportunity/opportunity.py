@@ -31,7 +31,6 @@ class Opportunity(TransactionBase):
 		if not self.enquiry_from:
 			frappe.throw(_("Opportunity From field is mandatory"))
 
-		self.set_status()
 		self.validate_item_details()
 		self.validate_uom_is_integer("uom", "qty")
 		self.validate_lead_cust()
@@ -85,11 +84,19 @@ class Opportunity(TransactionBase):
 		self.delete_events()
 
 	def has_active_quotation(self):
-		return frappe.db.sql("""
-			select q.name 
-			from `tabQuotation` q, `tabQuotation Item` qi
-			where q.name = qi.parent and q.docstatus=1 and qi.prevdoc_docname =%s 
-			and q.status not in ('Lost', 'Closed')""", self.name)
+		if not self.with_items:
+			return frappe.get_all('Quotation',
+				{
+					'opportunity': self.name,
+					'status': ("not in", ['Lost', 'Closed']),
+					'docstatus': 1
+				}, 'name')
+		else:
+			return frappe.db.sql("""
+				select q.name
+				from `tabQuotation` q, `tabQuotation Item` qi
+				where q.name = qi.parent and q.docstatus=1 and qi.prevdoc_docname =%s
+				and q.status not in ('Lost', 'Closed')""", self.name)
 
 	def has_ordered_quotation(self):
 		return frappe.db.sql("""
@@ -213,6 +220,8 @@ def make_quotation(source_name, target_doc=None):
 
 		quotation.run_method("set_missing_values")
 		quotation.run_method("calculate_taxes_and_totals")
+		if not source.with_items:
+			quotation.opportunity = source.name
 
 	doclist = get_mapped_doc("Opportunity", source_name, {
 		"Opportunity": {
@@ -273,4 +282,6 @@ def auto_close_opportunity():
 	for opportunity in opportunities:
 		doc = frappe.get_doc("Opportunity", opportunity.get("name"))
 		doc.status = "Closed"
-		doc.save(ignore_permissions=True)
+		doc.flags.ignore_permissions = True
+		doc.flags.ignore_mandatory = True
+		doc.save()

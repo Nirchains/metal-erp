@@ -21,6 +21,7 @@ STANDARD_USERS = ("Guest", "Administrator")
 class RequestforQuotation(BuyingController):
 	def validate(self):
 		self.validate_duplicate_supplier()
+		self.validate_supplier_list()
 		validate_for_items(self)
 		self.update_email_id()
 
@@ -28,6 +29,17 @@ class RequestforQuotation(BuyingController):
 		supplier_list = [d.supplier for d in self.suppliers]
 		if len(supplier_list) != len(set(supplier_list)):
 			frappe.throw(_("Same supplier has been entered multiple times"))
+
+	def validate_supplier_list(self):
+		for d in self.suppliers:
+			prevent_rfqs = frappe.db.get_value("Supplier", d.supplier, 'prevent_rfqs')
+			if prevent_rfqs:
+				standing = frappe.db.get_value("Supplier Scorecard",d.supplier, 'status')
+				frappe.throw(_("RFQs are not allowed for {0} due to a scorecard standing of {1}").format(d.supplier, standing))
+			warn_rfqs = frappe.db.get_value("Supplier", d.supplier, 'warn_rfqs')
+			if warn_rfqs:
+				standing = frappe.db.get_value("Supplier Scorecard",d.supplier, 'status')
+				frappe.msgprint(_("{0} currently has a {1} Supplier Scorecard standing, and RFQs to this supplier should be issued with caution.").format(d.supplier, standing), title=_("Caution"), indicator='orange')
 
 	def update_email_id(self):
 		for rfq_supplier in self.suppliers:
@@ -40,6 +52,9 @@ class RequestforQuotation(BuyingController):
 
 	def on_submit(self):
 		frappe.db.set(self, 'status', 'Submitted')
+		for supplier in self.suppliers:
+			supplier.email_sent = 0
+			supplier.quote_status = 'Pending'
 
 	def on_cancel(self):
 		frappe.db.set(self, 'status', 'Cancelled')
@@ -54,6 +69,8 @@ class RequestforQuotation(BuyingController):
 
 				self.update_supplier_part_no(rfq_supplier)
 				self.supplier_rfq_mail(rfq_supplier, update_password_link, self.get_link())
+				rfq_supplier.email_sent = 1
+				rfq_supplier.save()
 
 	def get_link(self):
 		# RFQ link for supplier portal
@@ -84,7 +101,10 @@ class RequestforQuotation(BuyingController):
 		else:
 			contact = frappe.new_doc("Contact")
 			contact.first_name = rfq_supplier.supplier_name or rfq_supplier.supplier
-			contact.supplier = rfq_supplier.supplier
+			contact.append('links', {
+				'link_doctype': 'Supplier',
+				'link_name': rfq_supplier.supplier
+			})
 
 		if not contact.email_id and not contact.user:
 			contact.email_id = user.name
@@ -138,6 +158,28 @@ class RequestforQuotation(BuyingController):
 		attachments.append(frappe.attach_print(self.doctype, self.name, doc=self))
 		return attachments
 
+	def update_rfq_supplier_status(self, sup_name=None):
+		for supplier in self.suppliers:
+			if sup_name == None or supplier.supplier == sup_name:
+				if supplier.quote_status != _('No Quote'):
+					quote_status = _('Received')
+					for item in self.items:
+						sqi_count = frappe.db.sql("""
+							SELECT
+								COUNT(sqi.name) as count
+							FROM
+								`tabSupplier Quotation Item` as sqi,
+								`tabSupplier Quotation` as sq
+							WHERE sq.supplier = %(supplier)s
+								AND sqi.docstatus = 1
+								AND sqi.request_for_quotation_item = %(rqi)s
+								AND sqi.parent = sq.name""",
+							{"supplier": supplier.supplier, "rqi": item.name}, as_dict=1)[0]
+						if (sqi_count.count) == 0:
+							quote_status = _('Pending')
+					supplier.quote_status = quote_status
+
+
 @frappe.whitelist()
 def send_supplier_emails(rfq_name):
 	check_portal_enabled('Request for Quotation')
@@ -153,13 +195,18 @@ def check_portal_enabled(reference_doctype):
 def get_list_context(context=None):
 	from erpnext.controllers.website_list_for_contact import get_list_context
 	list_context = get_list_context(context)
-	list_context["show_sidebar"] = True
+	list_context.update({
+		'show_sidebar': True,
+		'show_search': True,
+		'no_breadcrumbs': True,
+		'title': _('Request for Quotation'),
+	})
 	return list_context
 
 def get_supplier_contacts(doctype, txt, searchfield, start, page_len, filters):
-	return frappe.db.sql(""" select `tabContact`.name from `tabContact`, `tabDynamic Link`
-		where `tabDynamic Link`.link_doctype = 'Supplier' and (`tabDynamic Link`.link_name = %(name)s
-		or `tabDynamic Link`.link_name like %(txt)s) and `tabContact`.name = `tabDynamic Link`.parent
+	return frappe.db.sql("""select `tabContact`.name from `tabContact`, `tabDynamic Link`
+		where `tabDynamic Link`.link_doctype = 'Supplier' and (`tabDynamic Link`.link_name=%(name)s
+		and `tabDynamic Link`.link_name like %(txt)s) and `tabContact`.name = `tabDynamic Link`.parent
 		limit %(start)s, %(page_len)s""", {"start": start, "page_len":page_len, "txt": "%%%s%%" % txt, "name": filters.get('supplier')})
 
 # This method is used to make supplier quotation from material request form.

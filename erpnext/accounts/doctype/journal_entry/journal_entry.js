@@ -43,8 +43,26 @@ frappe.ui.form.on("Journal Entry", {
 		$.each(frm.doc.accounts || [], function(i, row) {
 			erpnext.journal_entry.set_exchange_rate(frm, row.doctype, row.name);
 		})
+	},
+
+	company: function(frm) {
+		frappe.call({
+			method: "frappe.client.get_value",
+			args: {
+				doctype: "Company",
+				filters: {"name": frm.doc.company},
+				fieldname: "cost_center"
+			},
+			callback: function(r){
+				if(r.message){
+					$.each(frm.doc.accounts || [], function(i, jvd) {
+						frappe.model.set_value(jvd.doctype, jvd.name, "cost_center", r.message.cost_center);
+					});
+				}
+			}
+		});
 	}
-})
+});
 
 erpnext.accounts.JournalEntry = frappe.ui.form.Controller.extend({
 	onload: function() {
@@ -62,11 +80,10 @@ erpnext.accounts.JournalEntry = frappe.ui.form.Controller.extend({
 		if(this.frm.doc.__islocal && this.frm.doc.company) {
 			frappe.model.set_default_values(this.frm.doc);
 			$.each(this.frm.doc.accounts || [], function(i, jvd) {
-					frappe.model.set_default_values(jvd);
-				}
-			);
+				frappe.model.set_default_values(jvd);
+			});
 
-			if(!this.frm.doc.amended_from) this.frm.doc.posting_date = this.frm.posting_date || get_today();
+			if(!this.frm.doc.amended_from) this.frm.doc.posting_date = this.frm.posting_date || frappe.datetime.get_today();
 		}
 	},
 
@@ -97,7 +114,14 @@ erpnext.accounts.JournalEntry = frappe.ui.form.Controller.extend({
 
 			// expense claim
 			if(jvd.reference_type==="Expense Claim") {
-				return {};
+				return {
+					filters: {
+						'approval_status': 'Approved',
+						'total_sanctioned_amount': ['>', 0],
+						'status': ['!=', 'Paid'],
+						'docstatus': 1
+					}
+				};
 			}
 
 			// journal entry
@@ -123,10 +147,11 @@ erpnext.accounts.JournalEntry = frappe.ui.form.Controller.extend({
 
 				// account filter
 				frappe.model.validate_missing(jvd, "account");
-
-				party_account_field = jvd.reference_type==="Sales Invoice" ? "debit_to": "credit_to";
+				var party_account_field = jvd.reference_type==="Sales Invoice" ? "debit_to": "credit_to";
 				out.filters.push([jvd.reference_type, party_account_field, "=", jvd.account]);
-			} else {
+			}
+
+			if(in_list(["Sales Order", "Purchase Order"], jvd.reference_type)) {
 				// party_type and party mandatory
 				frappe.model.validate_missing(jvd, "party_type");
 				frappe.model.validate_missing(jvd, "party");
@@ -243,7 +268,7 @@ cur_frm.cscript.update_totals = function(doc) {
 cur_frm.cscript.get_balance = function(doc,dt,dn) {
 	cur_frm.cscript.update_totals(doc);
 	return $c_obj(cur_frm.doc, 'get_balance', '', function(r, rt){
-	cur_frm.refresh();
+		cur_frm.refresh();
 	});
 }
 

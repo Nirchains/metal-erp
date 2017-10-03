@@ -1,9 +1,10 @@
 # -*- coding: utf-8 -*-
 from __future__ import unicode_literals
+import inspect
 import frappe
+from erpnext.hooks import regional_overrides
 
-__version__ = '8.0.39'
-
+__version__ = '9.0.7'
 
 def get_default_company(user=None):
 	'''Get default company for user'''
@@ -27,6 +28,16 @@ def get_default_currency():
 	if company:
 		return frappe.db.get_value('Company', company, 'default_currency')
 
+def get_default_cost_center(company):
+	'''Returns the default cost center of the company'''
+	if not company:
+		return None
+
+	if not frappe.flags.company_cost_center:
+		frappe.flags.company_cost_center = {}
+	if not company in frappe.flags.company_cost_center:
+		frappe.flags.company_cost_center[company] = frappe.db.get_value('Company', company, 'cost_center')
+	return frappe.flags.company_cost_center[company]
 
 def get_company_currency(company):
 	'''Returns the default company currency'''
@@ -36,12 +47,13 @@ def get_company_currency(company):
 		frappe.flags.company_currency[company] = frappe.db.get_value('Company', company, 'default_currency')
 	return frappe.flags.company_currency[company]
 
+def set_perpetual_inventory(enable=1, company=None):
+	if not company:
+		company = "_Test Company" if frappe.flags.in_test else get_default_company()
 
-def set_perpetual_inventory(enable=1):
-	accounts_settings = frappe.get_doc("Accounts Settings")
-	accounts_settings.auto_accounting_for_stock = enable
-	accounts_settings.save()
-
+	company = frappe.get_doc("Company", company)
+	company.enable_perpetual_inventory = enable
+	company.save()
 
 def encode_company_abbr(name, company):
 	'''Returns name encoded with company abbreviation'''
@@ -53,4 +65,46 @@ def encode_company_abbr(name, company):
 
 	return " - ".join(parts)
 
+def is_perpetual_inventory_enabled(company):
+	if not company:
+		company = "_Test Company" if frappe.flags.in_test else get_default_company()
+
+	if not hasattr(frappe.local, 'enable_perpetual_inventory'):
+		frappe.local.enable_perpetual_inventory = {}
+
+	if not company in frappe.local.enable_perpetual_inventory:
+		frappe.local.enable_perpetual_inventory[company] = frappe.db.get_value("Company",
+			company, "enable_perpetual_inventory") or 0
+
+	return frappe.local.enable_perpetual_inventory[company]
+
+def get_region(company=None):
+	'''Return the default country based on flag, company or global settings
+
+	You can also set global company flag in `frappe.flags.company`
+	'''
+	if company or frappe.flags.company:
+		return frappe.db.get_value('Company',
+			company or frappe.flags.company, 'country')
+	elif frappe.flags.country:
+		return frappe.flags.country
+	else:
+		return frappe.get_system_settings('country')
+
+def allow_regional(fn):
+	'''Decorator to make a function regionally overridable
+
+	Example:
+	@erpnext.allow_regional
+	def myfunction():
+	  pass'''
+	def caller(*args, **kwargs):
+		region = get_region()
+		fn_name = inspect.getmodule(fn).__name__ + '.' + fn.__name__
+		if region in regional_overrides and fn_name in regional_overrides[region]:
+			return frappe.get_attr(regional_overrides[region][fn_name])(*args, **kwargs)
+		else:
+			return fn(*args, **kwargs)
+
+	return caller
 

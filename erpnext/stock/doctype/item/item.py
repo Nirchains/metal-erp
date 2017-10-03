@@ -37,7 +37,8 @@ class Item(WebsiteGenerator):
 		if frappe.db.get_default("item_naming_by")=="Naming Series":
 			if self.variant_of:
 				if not self.item_code:
-					self.item_code = make_variant_item_code(self.variant_of, self)
+					template_item_name = frappe.db.get_value("Item", self.variant_of, "item_name")
+					self.item_code = make_variant_item_code(self.variant_of, template_item_name, self)
 			else:
 				from frappe.model.naming import make_autoname
 				self.item_code = make_autoname(self.naming_series+'.#####')
@@ -131,7 +132,8 @@ class Item(WebsiteGenerator):
 		from erpnext.stock.doctype.stock_entry.stock_entry_utils import make_stock_entry
 
 		# default warehouse, or Stores
-		default_warehouse = (frappe.db.get_single_value('Stock Settings', 'default_warehouse')
+		default_warehouse = (self.default_warehouse
+			or frappe.db.get_single_value('Stock Settings', 'default_warehouse')
 			or frappe.db.get_value('Warehouse', {'warehouse_name': _('Stores')}))
 
 		if default_warehouse:
@@ -144,10 +146,6 @@ class Item(WebsiteGenerator):
 		if not self.route:
 			return cstr(frappe.db.get_value('Item Group', self.item_group,
 				'route')) + '/' + self.scrub(self.item_name + '-' + random_string(5))
-
-	def get_parents(self, context):
-		item_group, route = frappe.db.get_value('Item Group', self.item_group, ['name', 'route'])
-		context.parents = [{'name': route, 'label': item_group}]
 
 	def validate_website_image(self):
 		"""Validate if the website image is a public file"""
@@ -241,14 +239,11 @@ class Item(WebsiteGenerator):
 		context.show_search=True
 		context.search_link = '/product_search'
 
-		context.parent_groups = get_parent_item_groups(self.item_group) + \
-			[{"name": self.name}]
+		context.parents = get_parent_item_groups(self.item_group)
 
 		self.set_variant_context(context)
 		self.set_attribute_context(context)
 		self.set_disabled_attributes(context)
-
-		context.parents = self.get_parents(context)
 
 		return context
 
@@ -493,6 +488,8 @@ class Item(WebsiteGenerator):
 	def validate_warehouse_for_reorder(self):
 		warehouse = []
 		for i in self.get("reorder_levels"):
+			if not i.warehouse_group:
+				i.warehouse_group = i.warehouse
 			if i.get("warehouse") and i.get("warehouse") not in warehouse:
 				warehouse += [i.get("warehouse")]
 			else:
@@ -523,7 +520,7 @@ class Item(WebsiteGenerator):
 
 	def before_rename(self, old_name, new_name, merge=False):
 		if self.item_name==old_name:
-			self.item_name=new_name
+			frappe.db.set_value("Item", old_name, "item_name", new_name)
 
 		if merge:
 			# Validate properties before merging
@@ -702,7 +699,7 @@ def _msgprint(msg, verbose):
 	if verbose:
 		msgprint(msg, raise_exception=True)
 	else:
-		raise frappe.ValidationError, msg
+		raise frappe.ValidationError(msg)
 
 
 def get_last_purchase_details(item_code, doc_name=None, conversion_rate=1.0):

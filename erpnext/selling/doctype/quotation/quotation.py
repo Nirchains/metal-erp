@@ -4,7 +4,7 @@
 from __future__ import unicode_literals
 import frappe
 from frappe.model.mapper import get_mapped_doc
-from frappe.utils import flt
+from frappe.utils import flt, nowdate, getdate
 from frappe import _
 
 from erpnext.controllers.selling_controller import SellingController
@@ -14,6 +14,14 @@ form_grid_templates = {
 }
 
 class Quotation(SellingController):
+	def set_indicator(self):
+		if self.docstatus==1:
+			self.indicator_color = 'blue'
+			self.indicator_title = 'Submitted'
+		if self.valid_till and getdate(self.valid_till) < getdate(nowdate()):
+			self.indicator_color = 'darkgrey'
+			self.indicator_title = 'Expired'
+
 	def validate(self):
 		super(Quotation, self).validate()
 		self.set_status()
@@ -21,8 +29,13 @@ class Quotation(SellingController):
 		self.validate_order_type()
 		self.validate_uom_is_integer("stock_uom", "qty")
 		self.validate_quotation_to()
+		self.validate_valid_till()
 		if self.items:
 			self.with_items = 1
+
+	def validate_valid_till(self):
+		if self.valid_till and self.valid_till < self.transaction_date:
+			frappe.throw(_("Valid till date cannot be before transaction date"))
 
 	def has_sales_order(self):
 		return frappe.db.get_value("Sales Order Item", {"prevdoc_docname": self.name, "docstatus": 1})
@@ -44,9 +57,18 @@ class Quotation(SellingController):
 	def update_opportunity(self):
 		for opportunity in list(set([d.prevdoc_docname for d in self.get("items")])):
 			if opportunity:
-				opp = frappe.get_doc("Opportunity", opportunity)
-				opp.status = None
-				opp.set_status(update=True)
+				self.update_opportunity_status(opportunity)
+
+		if self.opportunity:
+			self.update_opportunity_status()
+
+	def update_opportunity_status(self, opportunity=None):
+		if not opportunity:
+			opportunity = self.opportunity
+
+		opp = frappe.get_doc("Opportunity", opportunity)
+		opp.status = None
+		opp.set_status(update=True)
 
 	def declare_order_lost(self, arg):
 		if not self.has_sales_order():
@@ -86,9 +108,26 @@ class Quotation(SellingController):
 			print_lst.append(lst1)
 		return print_lst
 
+	def on_recurring(self, reference_doc, subscription_doc):
+		self.valid_till = None
+
+def get_list_context(context=None):
+	from erpnext.controllers.website_list_for_contact import get_list_context
+	list_context = get_list_context(context)
+	list_context.update({
+		'show_sidebar': True,
+		'show_search': True,
+		'no_breadcrumbs': True,
+		'title': _('Quotations'),
+	})
+
+	return list_context
 
 @frappe.whitelist()
 def make_sales_order(source_name, target_doc=None):
+	quotation = frappe.db.get_value("Quotation", source_name, ["transaction_date", "valid_till"], as_dict = 1)
+	if quotation.valid_till and (quotation.valid_till < quotation.transaction_date or quotation.valid_till < getdate(nowdate())):
+		frappe.throw(_("Validity period of this quotation has ended."))
 	return _make_sales_order(source_name, target_doc)
 
 def _make_sales_order(source_name, target_doc=None, ignore_permissions=False):

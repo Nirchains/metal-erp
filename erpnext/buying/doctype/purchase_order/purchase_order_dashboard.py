@@ -5,12 +5,13 @@ def get_data():
 		'fieldname': 'purchase_order',
 		'non_standard_fieldnames': {
 			'Journal Entry': 'reference_name',
-			'Payment Entry': 'reference_name'
+			'Payment Entry': 'reference_name',
+			'Subscription': 'reference_document'
 		},
 		'internal_links': {
 			'Material Request': ['items', 'material_request'],
 			'Supplier Quotation': ['items', 'supplier_quotation'],
-			'Project': ['project'],
+			'Project': ['items', 'project'],
 		},
 		'transactions': [
 			{
@@ -23,11 +24,11 @@ def get_data():
 			},
 			{
 				'label': _('Reference'),
-				'items': ['Material Request', 'Supplier Quotation', 'Project']
+				'items': ['Material Request', 'Supplier Quotation', 'Project', 'Subscription']
 			},
 			{
 				'label': _('Sub-contracting'),
 				'items': ['Stock Entry']
-			}
+			},
 		]
 	}

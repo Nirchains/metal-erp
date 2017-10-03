@@ -4,11 +4,13 @@
 
 from __future__ import unicode_literals
 import unittest
-import frappe
+import frappe, erpnext
 import frappe.defaults
-from frappe.utils import cint, flt, cstr, today
+from frappe.utils import cint, flt, cstr, today, random_string
 from erpnext.stock.doctype.purchase_receipt.purchase_receipt import make_purchase_invoice
 from erpnext import set_perpetual_inventory
+from erpnext.stock.doctype.serial_no.serial_no import SerialNoDuplicateError
+from erpnext.accounts.doctype.account.test_account import get_inventory_account
 
 class TestPurchaseReceipt(unittest.TestCase):
 	def setUp(self):
@@ -29,7 +31,8 @@ class TestPurchaseReceipt(unittest.TestCase):
 		self.assertRaises(frappe.ValidationError, frappe.get_doc(pi).submit)
 
 	def test_purchase_receipt_no_gl_entry(self):
-		set_perpetual_inventory(0)
+		company = frappe.db.get_value('Warehouse', '_Test Warehouse - _TC', 'company')
+		set_perpetual_inventory(0, company)
 
 		existing_bin_stock_value = frappe.db.get_value("Bin", {"item_code": "_Test Item",
 			"warehouse": "_Test Warehouse - _TC"}, "stock_value")
@@ -49,9 +52,9 @@ class TestPurchaseReceipt(unittest.TestCase):
 		self.assertFalse(get_gl_entries("Purchase Receipt", pr.name))
 
 	def test_purchase_receipt_gl_entry(self):
-		set_perpetual_inventory()
-		self.assertEqual(cint(frappe.defaults.get_global_default("auto_accounting_for_stock")), 1)
 		pr = frappe.copy_doc(test_records[0])
+		set_perpetual_inventory(1, pr.company)
+		self.assertEqual(cint(erpnext.is_perpetual_inventory_enabled(pr.company)), 1)
 		pr.insert()
 		pr.submit()
 
@@ -59,17 +62,22 @@ class TestPurchaseReceipt(unittest.TestCase):
 
 		self.assertTrue(gl_entries)
 
-		stock_in_hand_account = frappe.db.get_value("Account",
-			{"warehouse": pr.get("items")[0].warehouse})
-		fixed_asset_account = frappe.db.get_value("Account",
-			{"warehouse": pr.get("items")[1].warehouse})
+		stock_in_hand_account = get_inventory_account(pr.company, pr.get("items")[0].warehouse)
+		fixed_asset_account = get_inventory_account(pr.company, pr.get("items")[1].warehouse)
 
-		expected_values = {
-			stock_in_hand_account: [375.0, 0.0],
-			fixed_asset_account: [375.0, 0.0],
-			"Stock Received But Not Billed - _TC": [0.0, 500.0],
-			"Expenses Included In Valuation - _TC": [0.0, 250.0]
-		}
+		if stock_in_hand_account == fixed_asset_account:
+			expected_values = {
+				stock_in_hand_account: [750.0, 0.0],
+				"Stock Received But Not Billed - _TC": [0.0, 500.0],
+				"Expenses Included In Valuation - _TC": [0.0, 250.0]
+			}
+		else:
+			expected_values = {
+				stock_in_hand_account: [375.0, 0.0],
+				fixed_asset_account: [375.0, 0.0],
+				"Stock Received But Not Billed - _TC": [0.0, 500.0],
+				"Expenses Included In Valuation - _TC": [0.0, 250.0]
+			}
 
 		for gle in gl_entries:
 			self.assertEquals(expected_values[gle.account][0], gle.debit)
@@ -78,7 +86,7 @@ class TestPurchaseReceipt(unittest.TestCase):
 		pr.cancel()
 		self.assertFalse(get_gl_entries("Purchase Receipt", pr.name))
 
-		set_perpetual_inventory(0)
+		set_perpetual_inventory(0, pr.company)
 
 	def test_subcontracting(self):
 		from erpnext.stock.doctype.stock_entry.test_stock_entry import make_stock_entry
@@ -141,9 +149,10 @@ class TestPurchaseReceipt(unittest.TestCase):
 		gl_entries = get_gl_entries("Purchase Receipt", return_pr.name)
 
 		self.assertTrue(gl_entries)
+		stock_in_hand_account = get_inventory_account(return_pr.company)
 
 		expected_values = {
-			"_Test Warehouse - _TC": [0.0, 100.0],
+			stock_in_hand_account: [0.0, 100.0],
 			"Stock Received But Not Billed - _TC": [100.0, 0.0],
 		}
 
@@ -242,6 +251,27 @@ class TestPurchaseReceipt(unittest.TestCase):
 		self.assertEqual(pr2.get("items")[0].billed_amt, 2000)
 		self.assertEqual(pr2.per_billed, 80)
 		self.assertEqual(pr2.status, "To Bill")
+
+	def test_not_accept_duplicate_serial_no(self):
+		from erpnext.stock.doctype.stock_entry.test_stock_entry import make_stock_entry
+		from erpnext.stock.doctype.item.test_item import make_item
+		from erpnext.stock.doctype.delivery_note.test_delivery_note import create_delivery_note
+
+		item_code = frappe.db.get_value('Item', {'has_serial_no': 1})
+		if not item_code:
+			item = make_item("Test Serial Item 1", dict(has_serial_no = 1))
+			item_code = item.name
+
+		serial_no = random_string(5)
+		make_purchase_receipt(item_code=item_code, qty=1, serial_no=serial_no)
+		create_delivery_note(item_code=item_code, qty=1, serial_no=serial_no)
+
+		pr = make_purchase_receipt(item_code=item_code, qty=1, serial_no=serial_no, do_not_submit=True)
+		self.assertRaises(SerialNoDuplicateError, pr.submit)
+
+		se = make_stock_entry(item_code=item_code, target="_Test Warehouse - _TC", qty=1,
+			serial_no=serial_no, basic_rate=100, do_not_submit=True)
+		self.assertRaises(SerialNoDuplicateError, se.submit)
 
 def get_gl_entries(voucher_type, voucher_no):
 	return frappe.db.sql("""select account, debit, credit

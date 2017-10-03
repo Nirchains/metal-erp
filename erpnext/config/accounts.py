@@ -33,9 +33,15 @@ def get_data():
 					"description": _("Point of Sale")
 				},
 				{
+					"type": "doctype",
+					"name": "Subscription",
+					"label": _("Subscription"),
+					"description": _("To make recurring documents")
+				},
+				{
 					"type": "report",
 					"name": "Accounts Receivable",
-					"doctype": "Sales Invoice",	
+					"doctype": "Sales Invoice",
 					"is_query_report": True
 				},
 				{
@@ -194,6 +200,39 @@ def get_data():
 					"type": "report",
 					"name": "Purchase Register",
 					"doctype": "Purchase Invoice",
+					"is_query_report": True
+				},
+			]
+		},
+		{
+			"label": _("Goods and Services Tax (GST India)"),
+			"items": [
+				{
+					"type": "doctype",
+					"name": "GST Settings",
+				},
+				{
+					"type": "doctype",
+					"name": "GST HSN Code",
+				},
+				{
+					"type": "report",
+					"name": "GST Sales Register",
+					"is_query_report": True
+				},
+				{
+					"type": "report",
+					"name": "GST Purchase Register",
+					"is_query_report": True
+				},
+				{
+					"type": "report",
+					"name": "GST Itemised Sales Register",
+					"is_query_report": True
+				},
+				{
+					"type": "report",
+					"name": "GST Itemised Purchase Register",
 					"is_query_report": True
 				},
 			]

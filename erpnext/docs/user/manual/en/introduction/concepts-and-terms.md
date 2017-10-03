@@ -1,3 +1,5 @@
+# Concepts And Terms
+
 Before you start implementation, lets get familiar with the terminology that
 is used and some basic concepts in ERPNext.
 
@@ -105,7 +107,7 @@ them by product line or business group (e.g., online sales, retail sales, etc.).
 
 A document that contains General Ledger (GL) entries and the sum of Debits and
 Credits of those entries is the same. In ERPNext you can update Payments,
-Returns, etc., using Journal Entrys.
+Returns, etc., using Journal Entries.
 
 > Accounts > Journal Entry
 

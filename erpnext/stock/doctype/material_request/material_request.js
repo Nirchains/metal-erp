@@ -30,14 +30,22 @@ frappe.ui.form.on('Material Request', {
 });
 
 frappe.ui.form.on("Material Request Item", {
-	"qty": function(frm, doctype, name) {
-			var d = locals[doctype][name];
-			if (flt(d.qty) < flt(d.min_order_qty)) {
-				alert(__("Warning: Material Requested Qty is less than Minimum Order Qty"));
-			}
+	qty: function (frm, doctype, name) {
+		var d = locals[doctype][name];
+		if (flt(d.qty) < flt(d.min_order_qty)) {
+			frappe.msgprint(__("Warning: Material Requested Qty is less than Minimum Order Qty"));
 		}
+	},
+
+	item_code: function(frm, doctype, name) {
+		frm.script_manager.copy_from_first_row('items', frm.selected_doc,
+			'schedule_date');
+	},
+
+	schedule_date: function(frm, cdt, cdn) {
+		erpnext.utils.copy_value_in_all_row(frm.doc, cdt, cdn, "items", "schedule_date");
 	}
-);
+});
 
 erpnext.buying.MaterialRequestController = erpnext.buying.BuyingController.extend({
 	onload: function(doc) {
@@ -61,11 +69,11 @@ erpnext.buying.MaterialRequestController = erpnext.buying.BuyingController.exten
 		if(doc.docstatus == 1 && doc.status != 'Stopped') {
 			if(flt(doc.per_ordered, 2) < 100) {
 				// make
-				if(doc.material_request_type === "Material Transfer" && doc.status === "Submitted")
+				if(doc.material_request_type === "Material Transfer")
 					cur_frm.add_custom_button(__("Transfer Material"),
 					this.make_stock_entry, __("Make"));
 
-				if(doc.material_request_type === "Material Issue" && doc.status === "Submitted")
+				if(doc.material_request_type === "Material Issue")
 					cur_frm.add_custom_button(__("Issue Material"),
 					this.make_stock_entry, __("Make"));
 
@@ -81,7 +89,7 @@ erpnext.buying.MaterialRequestController = erpnext.buying.BuyingController.exten
 					cur_frm.add_custom_button(__("Supplier Quotation"),
 					this.make_supplier_quotation, __("Make"));
 
-				if(doc.material_request_type === "Manufacture" && doc.status === "Submitted")
+				if(doc.material_request_type === "Manufacture")
 					cur_frm.add_custom_button(__("Production Order"),
 					function() { me.raise_production_orders() }, __("Make"));
 
@@ -119,18 +127,6 @@ erpnext.buying.MaterialRequestController = erpnext.buying.BuyingController.exten
 
 	},
 
-	schedule_date: function(doc, cdt, cdn) {
-		var val = locals[cdt][cdn].schedule_date;
-		if(val) {
-			$.each((doc.items || []), function(i, d) {
-				if(!d.schedule_date) {
-					d.schedule_date = val;
-				}
-			});
-			refresh_field("items");
-		}
-	},
-
 	get_items_from_bom: function() {
 		var d = new frappe.ui.Dialog({
 			title: __("Get Items from BOM"),
@@ -140,7 +136,7 @@ erpnext.buying.MaterialRequestController = erpnext.buying.BuyingController.exten
 						return {filters: { docstatus:1 }}
 					}},
 				{"fieldname":"warehouse", "fieldtype":"Link", "label":__("Warehouse"),
-					options:"Warehouse", reqd: 1, label:"For Warehouse"},
+					options:"Warehouse", reqd: 1},
 				{"fieldname":"fetch_exploded", "fieldtype":"Check",
 					"label":__("Fetch exploded BOM (including sub-assemblies)"), "default":1},
 				{fieldname:"fetch", "label":__("Get Items from BOM"), "fieldtype":"Button"}
@@ -157,9 +153,11 @@ erpnext.buying.MaterialRequestController = erpnext.buying.BuyingController.exten
 					if(!r.message) {
 						frappe.throw(__("BOM does not contain any stock item"))
 					} else {
+						erpnext.utils.remove_empty_first_row(cur_frm, "items");
 						$.each(r.message, function(i, item) {
 							var d = frappe.model.add_child(cur_frm.doc, "Material Request Item", "items");
 							d.item_code = item.item_code;
+							d.item_name = item.item_name;
 							d.description = item.description;
 							d.warehouse = values.warehouse;
 							d.uom = item.stock_uom;

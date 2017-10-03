@@ -1,7 +1,7 @@
 // Copyright (c) 2015, Frappe Technologies Pvt. Ltd. and Contributors
 // License: GNU General Public License v3. See license.txt
 
-function SMSManager(doc) {
+erpnext.SMSManager = function SMSManager(doc) {
 	var me = this;
 	this.setup = function() {
 		var default_msg = {
@@ -35,14 +35,14 @@ function SMSManager(doc) {
 
 	this.get_contact_number = function(contact, ref_doctype, ref_name) {
 		frappe.call({
-			method: "erpnext.setup.doctype.sms_settings.sms_settings.get_contact_number",
+			method: "frappe.core.doctype.sms_settings.sms_settings.get_contact_number",
 			args: {
 				contact_name: contact,
 				ref_doctype: ref_doctype,
 				ref_name: ref_name
 			},
 			callback: function(r) {
-				if(r.exc) { msgprint(r.exc); return; }
+				if(r.exc) { frappe.msgprint(r.exc); return; }
 				me.number = r.message;
 				me.show_dialog();
 			}
@@ -85,14 +85,14 @@ function SMSManager(doc) {
 			if(v) {
 				$(btn).set_working();
 				frappe.call({
-					method: "erpnext.setup.doctype.sms_settings.sms_settings.send_sms",
+					method: "frappe.core.doctype.sms_settings.sms_settings.send_sms",
 					args: {
 						receiver_list: [v.number],
 						msg: v.message
 					},
 					callback: function(r) {
 						$(btn).done_working();
-						if(r.exc) {msgprint(r.exc); return; }
+						if(r.exc) {frappe.msgprint(r.exc); return; }
 						me.dialog.hide();
 					}
 				});

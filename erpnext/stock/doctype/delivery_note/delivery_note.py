@@ -8,10 +8,13 @@ from frappe.utils import flt, cint
 
 from frappe import msgprint, _
 import frappe.defaults
+from frappe.model.utils import get_fetch_values
 from frappe.model.mapper import get_mapped_doc
 from erpnext.controllers.selling_controller import SellingController
 from frappe.desk.notifications import clear_doctype_notifications
 from erpnext.stock.doctype.batch.batch import set_batch_nos
+from frappe.contacts.doctype.address.address import get_company_address
+from erpnext.stock.doctype.serial_no.serial_no import get_delivery_note_serial_no
 
 form_grid_templates = {
 	"items": "templates/form_grid/item_grid.html"
@@ -89,9 +92,9 @@ class DeliveryNote(SellingController):
 	def so_required(self):
 		"""check in manage account if sales order required or not"""
 		if frappe.db.get_value("Selling Settings", None, 'so_required') == 'Yes':
-			 for d in self.get('items'):
-				 if not d.against_sales_order:
-					 frappe.throw(_("Sales Order required for Item {0}").format(d.item_code))
+			for d in self.get('items'):
+				if not d.against_sales_order:
+					frappe.throw(_("Sales Order required for Item {0}").format(d.item_code))
 
 	def validate(self):
 		self.validate_posting_time()
@@ -102,7 +105,7 @@ class DeliveryNote(SellingController):
 		self.check_close_sales_order("against_sales_order")
 		self.validate_for_items()
 		self.validate_warehouse()
-		self.validate_uom_is_integer("stock_uom", "qty")
+		self.validate_uom_is_integer("stock_uom", "stock_qty")
 		self.validate_uom_is_integer("uom", "qty")
 		self.validate_with_previous_doc()
 
@@ -371,7 +374,7 @@ def get_invoiced_qty_map(delivery_note):
 def make_sales_invoice(source_name, target_doc=None):
 	invoiced_qty_map = get_invoiced_qty_map(source_name)
 
-	def update_accounts(source, target):
+	def set_missing_values(source, target):
 		target.is_pos = 0
 		target.ignore_pricing_rule = 1
 		target.run_method("set_missing_values")
@@ -381,8 +384,16 @@ def make_sales_invoice(source_name, target_doc=None):
 
 		target.run_method("calculate_taxes_and_totals")
 
+		# set company address
+		target.update(get_company_address(target.company))
+		if target.company_address:
+			target.update(get_fetch_values("Sales Invoice", 'company_address', target.company_address))	
+
 	def update_item(source_doc, target_doc, source_parent):
 		target_doc.qty = source_doc.qty - invoiced_qty_map.get(source_doc.name, 0)
+		if source_doc.serial_no and source_parent.per_billed > 0:
+			target_doc.serial_no = get_delivery_note_serial_no(source_doc.item_code,
+				target_doc.qty, source_parent.name)
 
 	doc = get_mapped_doc("Delivery Note", source_name, 	{
 		"Delivery Note": {
@@ -415,7 +426,7 @@ def make_sales_invoice(source_name, target_doc=None):
 			},
 			"add_if_empty": True
 		}
-	}, target_doc, update_accounts)
+	}, target_doc, set_missing_values)
 
 	return doc
 

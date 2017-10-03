@@ -3,6 +3,7 @@
 
 from __future__ import unicode_literals
 import frappe
+from frappe import _
 
 def get_domain(domain):
 	'''Written as a function to prevent data mutation effects'''
@@ -11,7 +12,8 @@ def get_domain(domain):
 			'desktop_icons': ['Item', 'BOM', 'Customer', 'Supplier', 'Sales Order',
 				'Production Order',  'Stock Entry', 'Purchase Order', 'Task', 'Buying', 'Selling',
 				 'Accounts', 'HR', 'ToDo'],
-			'remove_roles': ['Academics User', 'Instructor'],
+			'remove_roles': ['Academics User', 'Instructor', 'Physician', 'Nursing User',
+				'Laboratory user', 'LabTest Approver', 'Healthcare Administrator'],
 			'properties': [
 				{'doctype': 'Item', 'fieldname': 'manufacturing', 'property': 'collapsible_depends_on', 'value': 'is_stock_item'},
 			],
@@ -24,7 +26,9 @@ def get_domain(domain):
 		'Retail': {
 			'desktop_icons': ['POS', 'Item', 'Customer', 'Sales Invoice',  'Purchase Order',
 			'Warranty Claim', 'Accounts', 'Task', 'Buying', 'ToDo'],
-			'remove_roles': ['Manufacturing User', 'Manufacturing Manager', 'Academics User', 'Instructor'],
+			'remove_roles': ['Manufacturing User', 'Manufacturing Manager', 'Academics User', 'Instructor',
+				'Physician', 'Nursing User', 'Laboratory user',
+				'LabTest Approver', 'Healthcare Administrator'],
 			'properties': [
 				{'doctype': 'Item', 'fieldname': 'manufacturing', 'property': 'hidden', 'value': 1},
 				{'doctype': 'Customer', 'fieldname': 'credit_limit_section', 'property': 'hidden', 'value': 1},
@@ -38,7 +42,9 @@ def get_domain(domain):
 		'Distribution': {
 			'desktop_icons': ['Item', 'Customer', 'Supplier', 'Lead', 'Sales Order', 'Task',
 				 'Sales Invoice', 'CRM', 'Selling', 'Buying', 'Stock', 'Accounts', 'HR', 'ToDo'],
-			'remove_roles': ['Manufacturing User', 'Manufacturing Manager', 'Academics User', 'Instructor'],
+			'remove_roles': ['Manufacturing User', 'Manufacturing Manager', 'Academics User', 'Instructor',
+				'Physician', 'Nursing User', 'Laboratory user',
+				'LabTest Approver', 'Healthcare Administrator'],
 			'set_value': [
 				['Stock Settings', None, 'show_barcode_field', 1]
 			],
@@ -48,7 +54,9 @@ def get_domain(domain):
 		'Services': {
 			'desktop_icons': ['Project', 'Timesheet', 'Customer', 'Sales Order', 'Sales Invoice',
 				'Lead', 'Opportunity', 'Task', 'Expense Claim', 'Employee', 'HR', 'ToDo'],
-			'remove_roles': ['Manufacturing User', 'Manufacturing Manager', 'Academics User', 'Instructor'],
+			'remove_roles': ['Manufacturing User', 'Manufacturing Manager', 'Academics User', 'Instructor',
+				'Physician', 'Nursing User', 'Laboratory user',
+				'LabTest Approver', 'Healthcare Administrator'],
 			'properties': [
 				{'doctype': 'Item', 'fieldname': 'is_stock_item', 'property': 'default', 'value': 0},
 			],
@@ -65,6 +73,13 @@ def get_domain(domain):
 				'Student', 'Projects User', 'Instructor'],
 			'default_portal_role': 'Student'
 		},
+		'Healthcare': {
+			'desktop_icons': ['Patient', 'Patient Appointment', 'Consultation', 'Lab Test', 'Healthcare',
+				'Accounts',  'Buying', 'Stock', 'HR', 'ToDo'],
+			'remove_roles': ['Manufacturing User', 'Manufacturing Manager', 'Projects User', 'Projects Manager',
+				'Academics User', 'Instructor'],
+			'default_portal_role': 'Patient'
+		},
 	}
 	if not domain in data:
 		raise 'Invalid Domain {0}'.format(domain)
@@ -78,8 +93,11 @@ def setup_domain(domain):
 	setup_properties(data)
 	set_values(data)
 	setup_sidebar_items(data)
+	update_module_def_restrict_to_domain()
+
 	if data.get('default_portal_role'):
 		frappe.db.set_value('Portal Settings', None, 'default_role', data.get('default_portal_role'))
+
 	frappe.clear_cache()
 
 def setup_desktop_icons(data):
@@ -105,8 +123,9 @@ def setup_roles(data):
 
 	if data.allow_roles:
 		# remove all roles other than allowed roles
+		active_domains = frappe.get_active_domains()
 		data.allow_roles += ['Administrator', 'Guest', 'System Manager', 'All']
-		for role in frappe.get_all('Role'):
+		for role in frappe.get_all('Role', filters = {"restrict_to_domain": ("not in", active_domains)}):
 			if not (role.name in data.allow_roles):
 				remove_role(role.name)
 
@@ -136,9 +155,24 @@ def setup_sidebar_items(data):
 		frappe.db.sql('''update `tabPortal Menu Item` set enabled=0
 			where route in ({0})'''.format(', '.join(['"{0}"'.format(d) for d in data.remove_sidebar_items])))
 
-
 def reset():
 	from frappe.desk.page.setup_wizard.setup_wizard import add_all_roles_to
 	add_all_roles_to('Administrator')
 
 	frappe.db.sql('delete from `tabProperty Setter`')
+
+def update_module_def_restrict_to_domain():
+	""" set the restrict to domain for the module def """
+
+	module_def_restrict_to_domain_mapper = {
+		"Schools": 'Education'
+	}
+
+	lang = frappe.db.get_single_value("System Settings", "language") or "en"
+	for module, domain in module_def_restrict_to_domain_mapper.iteritems():
+		if frappe.db.exists("Domain", _(domain, lang)):
+			frappe.db.set_value("Module Def", module, "restrict_to_domain", _(domain, lang))
+		elif frappe.db.exists("Domain", domain):
+			frappe.db.set_value("Module Def", module, "restrict_to_domain", domain)
+		else:
+			pass

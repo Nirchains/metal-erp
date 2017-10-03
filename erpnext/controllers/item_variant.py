@@ -181,18 +181,21 @@ def copy_attributes_to_variant(item, variant):
 		exclude_fields += ['manufacturer', 'manufacturer_part_no']
 
 	for field in item.meta.fields:
-		if field.fieldtype not in no_value_fields and (not field.no_copy)\
-			and field.fieldname not in exclude_fields:
+		# "Table" is part of `no_value_field` but we shouldn't ignore tables
+		if (field.fieldtype == 'Table' or field.fieldtype not in no_value_fields) \
+			and (not field.no_copy) and field.fieldname not in exclude_fields:
 			if variant.get(field.fieldname) != item.get(field.fieldname):
 				variant.set(field.fieldname, item.get(field.fieldname))
 	variant.variant_of = item.name
 	variant.has_variants = 0
+	if not variant.description:
+		variant.description = ''
 
 	if item.variant_based_on=='Item Attribute':
 		if variant.attributes:
 			variant.description += "\n"
 			for d in variant.attributes:
-				variant.description += "<p>" + d.attribute + ": " + cstr(d.attribute_value) + "</p>"
+				variant.description += "<div>" + d.attribute + ": " + cstr(d.attribute_value) + "</div>"
 
 def make_variant_item_code(template_item_code, template_item_name, variant):
 	"""Uses template's item code and abbreviations to make variant's item code"""

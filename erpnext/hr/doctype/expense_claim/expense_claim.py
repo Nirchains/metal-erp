@@ -11,10 +11,15 @@ from erpnext.accounts.party import get_party_account
 from erpnext.accounts.general_ledger import make_gl_entries
 from erpnext.accounts.doctype.sales_invoice.sales_invoice import get_bank_cash_account
 from erpnext.controllers.accounts_controller import AccountsController
+from frappe.utils.csvutils import getlink
 
 class InvalidExpenseApproverError(frappe.ValidationError): pass
 
 class ExpenseClaim(AccountsController):
+	def onload(self):
+		self.get("__onload").make_payment_via_journal_entry = frappe.db.get_single_value('Accounts Settings', 
+			'make_payment_via_journal_entry')
+
 	def get_feed(self):
 		return _("{0}: From {0} for {1}").format(self.approval_status,
 			self.employee_name, self.total_claimed_amount)
@@ -38,10 +43,13 @@ class ExpenseClaim(AccountsController):
 			"2": "Cancelled"
 		}[cstr(self.docstatus or 0)]
 
-		if self.total_sanctioned_amount == self.total_amount_reimbursed and self.docstatus == 1:
+		if self.total_sanctioned_amount > 0 and self.total_sanctioned_amount == self.total_amount_reimbursed \
+			and self.docstatus == 1 and self.approval_status == 'Approved':
 			self.status = "Paid"
-		elif self.docstatus == 1:
+		elif self.total_sanctioned_amount > 0 and self.docstatus == 1 and self.approval_status == 'Approved':
 			self.status = "Unpaid"
+		elif self.docstatus == 1 and self.approval_status == 'Rejected':
+			self.status = 'Rejected'
 
 	def set_payable_account(self):
 		if not self.payable_account and not self.is_paid:
@@ -146,7 +154,7 @@ class ExpenseClaim(AccountsController):
 			frappe.throw(_("Cost center is required to book an expense claim"))
 
 		if not self.payable_account:
-			frappe.throw(_("Please set default payable account in the employee {0}").format(self.employee))
+			frappe.throw(_("Please set default payable account for the company {0}").format(getlink("Company",self.company)))
 
 		if self.is_paid:
 			if not self.mode_of_payment:
@@ -156,6 +164,9 @@ class ExpenseClaim(AccountsController):
 		self.total_claimed_amount = 0
 		self.total_sanctioned_amount = 0
 		for d in self.get('expenses'):
+			if self.approval_status == 'Rejected':
+				d.sanctioned_amount = 0.0
+
 			self.total_claimed_amount += flt(d.claim_amount)
 			self.total_sanctioned_amount += flt(d.sanctioned_amount)
 
@@ -200,10 +211,10 @@ def get_expense_approver(doctype, txt, searchfield, start, page_len, filters):
 	""", ("%" + txt + "%"))
 
 @frappe.whitelist()
-def make_bank_entry(docname):
+def make_bank_entry(dt, dn):
 	from erpnext.accounts.doctype.journal_entry.journal_entry import get_default_bank_cash_account
 
-	expense_claim = frappe.get_doc("Expense Claim", docname)
+	expense_claim = frappe.get_doc(dt, dn)
 	default_bank_cash_account = get_default_bank_cash_account(expense_claim.company, "Bank")
 	if not default_bank_cash_account:
 		default_bank_cash_account = get_default_bank_cash_account(expense_claim.company, "Cash")
@@ -211,7 +222,7 @@ def make_bank_entry(docname):
 	je = frappe.new_doc("Journal Entry")
 	je.voucher_type = 'Bank Entry'
 	je.company = expense_claim.company
-	je.remark = 'Payment against Expense Claim: ' + docname;
+	je.remark = 'Payment against Expense Claim: ' + dn;
 
 	je.append("accounts", {
 		"account": expense_claim.payable_account,

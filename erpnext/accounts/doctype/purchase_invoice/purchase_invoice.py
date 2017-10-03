@@ -11,10 +11,11 @@ from erpnext.controllers.buying_controller import BuyingController
 from erpnext.accounts.party import get_party_account, get_due_date
 from erpnext.accounts.utils import get_account_currency, get_fiscal_year
 from erpnext.stock.doctype.purchase_receipt.purchase_receipt import update_billed_amount_based_on_po
-from erpnext.controllers.stock_controller import get_warehouse_account
+from erpnext.stock import get_warehouse_account_map
 from erpnext.accounts.general_ledger import make_gl_entries, merge_similar_entries, delete_gl_entries
 from erpnext.accounts.doctype.gl_entry.gl_entry import update_outstanding_amt
 from erpnext.buying.utils import check_for_closed_status
+from erpnext.accounts.general_ledger import get_round_off_account_and_cost_center
 
 form_grid_templates = {
 	"items": "templates/form_grid/item_grid.html"
@@ -53,12 +54,16 @@ class PurchaseInvoice(BuyingController):
 		if (self.is_paid == 1):
 			self.validate_cash()
 
+		if self._action=="submit" and self.update_stock:
+			self.make_batches('warehouse')
+
 		self.check_conversion_rate()
 		self.validate_credit_to_acc()
 		self.clear_unallocated_advances("Purchase Invoice Advance", "advances")
 		self.check_for_closed_status()
 		self.validate_with_previous_doc()
 		self.validate_uom_is_integer("uom", "qty")
+		self.validate_uom_is_integer("stock_uom", "stock_qty")
 		self.set_expense_account(for_validate=True)
 		self.set_against_expense_account()
 		self.validate_write_off_account()
@@ -163,7 +168,7 @@ class PurchaseInvoice(BuyingController):
 				frappe.msgprint(_("Item Code required at Row No {0}").format(d.idx), raise_exception=True)
 
 	def set_expense_account(self, for_validate=False):
-		auto_accounting_for_stock = cint(frappe.defaults.get_global_default("auto_accounting_for_stock"))
+		auto_accounting_for_stock = erpnext.is_perpetual_inventory_enabled(self.company)
 
 		if auto_accounting_for_stock:
 			stock_not_billed_account = self.get_company_default("stock_received_but_not_billed")
@@ -172,7 +177,7 @@ class PurchaseInvoice(BuyingController):
 		if self.update_stock:
 			self.validate_item_code()
 			self.validate_warehouse()
-			warehouse_account = get_warehouse_account()
+			warehouse_account = get_warehouse_account_map()
 
 		for item in self.get("items"):
 			# in case of auto inventory accounting,
@@ -185,7 +190,7 @@ class PurchaseInvoice(BuyingController):
 					not frappe.db.get_value("Purchase Order Item", item.po_detail, "delivered_by_supplier")):
 
 				if self.update_stock:
-					item.expense_account = warehouse_account[item.warehouse]["name"]
+					item.expense_account = warehouse_account[item.warehouse]["account"]
 				else:
 					item.expense_account = stock_not_billed_account
 
@@ -204,14 +209,14 @@ class PurchaseInvoice(BuyingController):
 		if frappe.db.get_value("Buying Settings", None, "po_required") == 'Yes':
 			for d in self.get('items'):
 				if not d.purchase_order:
-					throw(_("Purchase Order number required for Item {0}").format(d.item_code))
+					throw(_("As per the Buying Settings if Purchase Order Required == 'YES', then for creating Purchase Invoice, user need to create Purchase Order first for item {0}").format(d.item_code))
 
 	def pr_required(self):
 		stock_items = self.get_stock_items()
 		if frappe.db.get_value("Buying Settings", None, "pr_required") == 'Yes':
 			for d in self.get('items'):
 				if not d.purchase_receipt and d.item_code in stock_items:
-					throw(_("Purchase Receipt number required for Item {0}").format(d.item_code))
+					throw(_("As per the Buying Settings if Purchase Reciept Required == 'YES', then for creating Purchase Invoice, user need to create Purchase Receipt first for item {0}").format(d.item_code))
 
 	def validate_write_off_account(self):
 		if self.write_off_amount and not self.write_off_account:
@@ -334,9 +339,7 @@ class PurchaseInvoice(BuyingController):
 			delete_gl_entries(voucher_type=self.doctype, voucher_no=self.name)
 
 	def get_gl_entries(self, warehouse_account=None):
-		self.auto_accounting_for_stock = \
-			cint(frappe.defaults.get_global_default("auto_accounting_for_stock"))
-
+		self.auto_accounting_for_stock = erpnext.is_perpetual_inventory_enabled(self.company)
 		self.stock_received_but_not_billed = self.get_company_default("stock_received_but_not_billed")
 		self.expenses_included_in_valuation = self.get_company_default("expenses_included_in_valuation")
 		self.negative_expense_to_be_booked = 0.0
@@ -351,6 +354,7 @@ class PurchaseInvoice(BuyingController):
 
 		self.make_payment_gl_entries(gl_entries)
 		self.make_write_off_gl_entry(gl_entries)
+		self.make_gle_for_rounding_adjustment(gl_entries)
 
 		return gl_entries
 
@@ -377,7 +381,7 @@ class PurchaseInvoice(BuyingController):
 		# item gl entries
 		stock_items = self.get_stock_items()
 		expenses_included_in_valuation = self.get_company_default("expenses_included_in_valuation")
-		warehouse_account = get_warehouse_account()
+		warehouse_account = get_warehouse_account_map()
 
 		for item in self.get("items"):
 			if flt(item.base_net_amount):
@@ -511,7 +515,7 @@ class PurchaseInvoice(BuyingController):
 
 				i += 1
 
-		if self.update_stock and valuation_tax:
+		if self.auto_accounting_for_stock and self.update_stock and valuation_tax:
 			for cost_center, amount in valuation_tax.items():
 				gl_entries.append(
 					self.get_gl_dict({
@@ -581,6 +585,21 @@ class PurchaseInvoice(BuyingController):
 					"cost_center": self.write_off_cost_center
 				})
 			)
+
+	def make_gle_for_rounding_adjustment(self, gl_entries):
+		if self.rounding_adjustment:
+			round_off_account, round_off_cost_center = \
+				get_round_off_account_and_cost_center(self.company)
+
+			gl_entries.append(
+				self.get_gl_dict({
+					"account": round_off_account,
+					"against": self.supplier,
+					"debit_in_account_currency": self.rounding_adjustment,
+					"debit": self.base_rounding_adjustment,
+					"cost_center": round_off_cost_center,
+				}
+			))
 
 	def on_cancel(self):
 		self.check_for_closed_status()
@@ -665,7 +684,7 @@ class PurchaseInvoice(BuyingController):
 				if account_type != 'Fixed Asset':
 					frappe.throw(_("Row {0}# Account must be of type 'Fixed Asset'").format(d.idx))
 
-	def on_recurring(self, reference_doc):
+	def on_recurring(self, reference_doc, subscription_doc):
 		self.due_date = None
 
 @frappe.whitelist()

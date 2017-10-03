@@ -3,10 +3,12 @@
 from __future__ import unicode_literals
 
 import unittest
-import frappe
+
 import erpnext
-from frappe.utils import flt, add_months, cint, nowdate, getdate, add_days, random_string
-from frappe.utils.make_random import get_random
+import frappe
+from frappe.utils import nowdate
+from erpnext.hr.doctype.process_payroll.process_payroll import get_end_date
+
 
 class TestProcessPayroll(unittest.TestCase):
 	def test_process_payroll(self):
@@ -14,10 +16,13 @@ class TestProcessPayroll(unittest.TestCase):
 		fiscal_year = "_Test Fiscal Year 2016"
 
 		for data in frappe.get_all('Salary Component', fields = ["name"]):
-			if not frappe.db.get_value('Salary Component Account', {'parent': data.name, 'company': erpnext.get_default_company()}, 'name'):
+			if not frappe.db.get_value('Salary Component Account',
+				{'parent': data.name, 'company': erpnext.get_default_company()}, 'name'):
 				get_salary_component_account(data.name)
 				
-		payment_account = frappe.get_value('Account', {'account_type': 'Cash', 'company': erpnext.get_default_company(),'is_group':0}, "name")
+		payment_account = frappe.get_value('Account',
+			{'account_type': 'Cash', 'company': erpnext.get_default_company(),'is_group':0}, "name")
+
 		if not frappe.db.get_value("Salary Slip", {"start_date": "2016-11-01", "end_date": "2016-11-30"}):
 			process_payroll = frappe.get_doc("Process Payroll", "Process Payroll")
 			process_payroll.company = erpnext.get_default_company()
@@ -30,6 +35,16 @@ class TestProcessPayroll(unittest.TestCase):
 			process_payroll.submit_salary_slips()
 			if process_payroll.get_sal_slip_list(ss_status = 1):
 				r = process_payroll.make_payment_entry()
+
+	def test_get_end_date(self):
+		self.assertEqual(get_end_date('2017-01-01', 'monthly'), {'end_date': '2017-01-31'})
+		self.assertEqual(get_end_date('2017-02-01', 'monthly'), {'end_date': '2017-02-28'})
+		self.assertEqual(get_end_date('2017-02-01', 'fortnightly'), {'end_date': '2017-02-14'})
+		self.assertEqual(get_end_date('2017-02-01', 'bimonthly'), {'end_date': ''})
+		self.assertEqual(get_end_date('2017-01-01', 'bimonthly'), {'end_date': ''})
+		self.assertEqual(get_end_date('2020-02-15', 'bimonthly'), {'end_date': ''})
+		self.assertEqual(get_end_date('2017-02-15', 'monthly'), {'end_date': '2017-03-14'})
+		self.assertEqual(get_end_date('2017-02-15', 'daily'), {'end_date': '2017-02-15'})
 	
 
 def get_salary_component_account(sal_comp):

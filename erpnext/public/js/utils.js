@@ -31,6 +31,12 @@ $.extend(erpnext, {
 		}
 	},
 
+	is_perpetual_inventory_enabled: function(company) {
+		if(company) {
+			return frappe.get_doc(":Company", company).enable_perpetual_inventory
+		}
+	},
+
 	setup_serial_no: function() {
 		var grid_row = cur_frm.open_grid_row();
 		if(!grid_row || !grid_row.grid_form.fields_dict.serial_no ||
@@ -104,7 +110,62 @@ $.extend(erpnext.utils, {
 			}
 		}
 		refresh_field(table_fieldname);
-	}
+	},
+
+	get_terms: function(tc_name, doc, callback) {
+		if(tc_name) {
+			return frappe.call({
+				method: 'erpnext.setup.doctype.terms_and_conditions.terms_and_conditions.get_terms_and_conditions',
+				args: {
+					template_name: tc_name,
+					doc: doc
+				},
+				callback: function(r) {
+					callback(r)
+				}
+			});
+		}
+	},
+
+	make_subscription: function(doctype, docname) {
+		frappe.call({
+			method: "erpnext.accounts.doctype.subscription.subscription.make_subscription",
+			args: {
+				doctype: doctype,
+				docname: docname
+			},
+			callback: function(r) {
+				var doclist = frappe.model.sync(r.message);
+				frappe.set_route("Form", doclist[0].doctype, doclist[0].name);
+			}
+		})
+	},
+
+	/**
+	* Checks if the first row of a given child table is empty
+	* @param child_table - Child table Doctype
+	* @return {Boolean}
+	**/
+	first_row_is_empty: function(child_table){
+		if($.isArray(child_table) && child_table.length > 0) {
+			return !child_table[0].item_code;
+		}
+		return false;
+	},
+
+	/**
+	* Removes the first row of a child table if it is empty
+	* @param {_Frm} frm - The current form
+	* @param {String} child_table_name - The child table field name
+	* @return {Boolean}
+	**/
+	remove_empty_first_row: function(frm, child_table_name){
+		const rows = frm['doc'][child_table_name];
+		if (this.first_row_is_empty(rows)){
+			frm['doc'][child_table_name] = rows.splice(1);
+		}
+		return rows;
+	},
 });
 
 erpnext.utils.map_current_doc = function(opts) {
@@ -233,7 +294,7 @@ $(document).on('app_ready', function() {
 			"Delivery Note", "Purchase Receipt", "Sales Invoice"], function(i, d) {
 			frappe.ui.form.on(d, "onload", function(frm) {
 				cur_frm.set_df_property("posting_time", "description",
-					sys_defaults.time_zone);
+					frappe.sys_defaults.time_zone);
 			});
 		});
 	}

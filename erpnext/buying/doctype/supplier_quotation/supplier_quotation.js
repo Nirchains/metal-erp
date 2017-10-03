@@ -5,7 +5,7 @@
 {% include 'erpnext/public/js/controllers/buying.js' %};
 
 frappe.ui.form.on('Suppier Quotation', {
-	setup: function() {
+	setup: function(frm) {
 		frm.custom_make_buttons = {
 			'Purchase Order': 'Purchase Order'
 		}
@@ -22,7 +22,9 @@ erpnext.buying.SupplierQuotationController = erpnext.buying.BuyingController.ext
 			cur_frm.page.set_inner_btn_group_as_primary(__("Make"));
 			cur_frm.add_custom_button(__("Quotation"), this.make_quotation,
 				__("Make"));
-
+			cur_frm.add_custom_button(__('Subscription'), function() {
+				erpnext.utils.make_subscription(me.frm.doc.doctype, me.frm.doc.name)
+			}, __("Make"))
 		}
 		else if (this.frm.doc.docstatus===0) {
 

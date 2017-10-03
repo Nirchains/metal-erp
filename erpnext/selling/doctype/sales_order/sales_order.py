@@ -7,12 +7,13 @@ import json
 import frappe.utils
 from frappe.utils import cstr, flt, getdate, comma_and, cint
 from frappe import _
+from frappe.model.utils import get_fetch_values
 from frappe.model.mapper import get_mapped_doc
 from erpnext.stock.stock_balance import update_bin_qty, get_reserved_qty
 from frappe.desk.notifications import clear_doctype_notifications
-from erpnext.controllers.recurring_document import month_map, get_next_date
-
+from frappe.contacts.doctype.address.address import get_company_address
 from erpnext.controllers.selling_controller import SellingController
+from erpnext.accounts.doctype.subscription.subscription import get_next_schedule_date
 
 form_grid_templates = {
 	"items": "templates/form_grid/item_grid.html"
@@ -29,10 +30,9 @@ class SalesOrder(SellingController):
 
 		self.validate_order_type()
 		self.validate_delivery_date()
-		self.validate_mandatory()
 		self.validate_proj_cust()
 		self.validate_po()
-		self.validate_uom_is_integer("stock_uom", "qty")
+		self.validate_uom_is_integer("stock_uom", "stock_qty")
 		self.validate_uom_is_integer("uom", "qty")
 		self.validate_for_items()
 		self.validate_warehouse()
@@ -47,25 +47,20 @@ class SalesOrder(SellingController):
 		if not self.billing_status: self.billing_status = 'Not Billed'
 		if not self.delivery_status: self.delivery_status = 'Not Delivered'
 
-	def validate_mandatory(self):
-		# validate transaction date v/s delivery date
-		if self.delivery_date:
-			if getdate(self.transaction_date) > getdate(self.delivery_date):
-				frappe.msgprint(_("Expected Delivery Date is be before Sales Order Date"),
-					indicator='orange',
-					title=_('Warning'))
-
 	def validate_po(self):
 		# validate p.o date v/s delivery date
-		if self.po_date and self.delivery_date and getdate(self.po_date) > getdate(self.delivery_date):
-			frappe.throw(_("Expected Delivery Date cannot be before Purchase Order Date"))
+		if self.po_date:
+			for d in self.get("items"):
+				if d.delivery_date and getdate(self.po_date) > getdate(d.delivery_date):
+					frappe.throw(_("Row #{0}: Expected Delivery Date cannot be before Purchase Order Date")
+						.format(d.idx))
 
 		if self.po_no and self.customer:
 			so = frappe.db.sql("select name from `tabSales Order` \
 				where ifnull(po_no, '') = %s and name != %s and docstatus < 2\
 				and customer = %s", (self.po_no, self.name, self.customer))
-			if so and so[0][0] and not \
-				cint(frappe.db.get_single_value("Selling Settings", "allow_against_multiple_purchase_orders")):
+			if so and so[0][0] and not cint(frappe.db.get_single_value("Selling Settings",
+				"allow_against_multiple_purchase_orders")):
 				frappe.msgprint(_("Warning: Sales Order {0} already exists against Customer's Purchase Order {1}").format(so[0][0], self.po_no))
 
 	def validate_for_items(self):
@@ -77,7 +72,7 @@ class SalesOrder(SellingController):
 			d.transaction_date = self.transaction_date
 
 			tot_avail_qty = frappe.db.sql("select projected_qty from `tabBin` \
-				where item_code = %s and warehouse = %s", (d.item_code,d.warehouse))
+				where item_code = %s and warehouse = %s", (d.item_code, d.warehouse))
 			d.projected_qty = tot_avail_qty and flt(tot_avail_qty[0][0]) or 0
 
 		# check for same entry multiple times
@@ -96,16 +91,30 @@ class SalesOrder(SellingController):
 	def validate_sales_mntc_quotation(self):
 		for d in self.get('items'):
 			if d.prevdoc_docname:
-				res = frappe.db.sql("select name from `tabQuotation` where name=%s and order_type = %s", (d.prevdoc_docname, self.order_type))
+				res = frappe.db.sql("select name from `tabQuotation` where name=%s and order_type = %s",
+					(d.prevdoc_docname, self.order_type))
 				if not res:
-					frappe.msgprint(_("Quotation {0} not of type {1}").format(d.prevdoc_docname, self.order_type))
+					frappe.msgprint(_("Quotation {0} not of type {1}")
+						.format(d.prevdoc_docname, self.order_type))
 
 	def validate_order_type(self):
 		super(SalesOrder, self).validate_order_type()
 
 	def validate_delivery_date(self):
-		if self.order_type == 'Sales' and not self.delivery_date:
-			frappe.throw(_("Please enter 'Expected Delivery Date'"))
+		if self.order_type == 'Sales':
+			if not self.delivery_date:
+				self.delivery_date = max([d.delivery_date for d in self.get("items")])
+
+			if self.delivery_date:
+				for d in self.get("items"):
+					if not d.delivery_date:
+						d.delivery_date = self.delivery_date
+					
+					if getdate(self.transaction_date) > getdate(d.delivery_date):
+						frappe.msgprint(_("Expected Delivery Date should be after Sales Order Date"),
+							indicator='orange', title=_('Warning'))
+			else:
+				frappe.throw(_("Please enter Delivery Date"))
 
 		self.validate_sales_mntc_quotation()
 
@@ -121,7 +130,7 @@ class SalesOrder(SellingController):
 		super(SalesOrder, self).validate_warehouse()
 
 		for d in self.get("items"):
-			if (frappe.db.get_value("Item", d.item_code, "is_stock_item")==1 or
+			if (frappe.db.get_value("Item", d.item_code, "is_stock_item") == 1 or
 				(self.has_product_bundle(d.item_code) and self.product_bundle_has_stock_item(d.item_code))) \
 				and not d.warehouse and not cint(d.delivered_by_supplier):
 				frappe.throw(_("Delivery warehouse required for stock item {0}").format(d.item_code),
@@ -263,6 +272,7 @@ class SalesOrder(SellingController):
 		pass
 
 	def before_update_after_submit(self):
+		self.validate_po()
 		self.validate_drop_ship()
 		self.validate_supplier_after_submit()
 
@@ -320,25 +330,32 @@ class SalesOrder(SellingController):
 	def get_production_order_items(self):
 		'''Returns items with BOM that already do not have a linked production order'''
 		items = []
-		for i in self.packed_items or self.items:
-			bom = frappe.get_all('BOM', dict(item=i.item_code, is_active=True),
-					order_by='is_default desc')
-			bom = bom[0].name if bom else None
-			items.append(dict(
-				item_code= i.item_code,
-				bom = bom,
-				warehouse = i.warehouse,
-				pending_qty= i.stock_qty - flt(frappe.db.sql('''select sum(qty) from `tabProduction Order`
-					where production_item=%s and sales_order=%s''', (i.item_code, self.name))[0][0])
-			))
+
+		for table in [self.items, self.packed_items]:
+			for i in table:
+				bom = get_default_bom_item(i.item_code)
+				if bom:
+					stock_qty = i.qty if i.doctype == 'Packed Item' else i.stock_qty
+					items.append(dict(
+						item_code= i.item_code,
+						bom = bom,
+						warehouse = i.warehouse,
+						pending_qty= stock_qty - flt(frappe.db.sql('''select sum(qty) from `tabProduction Order`
+							where production_item=%s and sales_order=%s''', (i.item_code, self.name))[0][0])
+					))
 
 		return items
 
+	def on_recurring(self, reference_doc, subscription_doc):
+		self.set("delivery_date", get_next_schedule_date(reference_doc.delivery_date, subscription_doc.frequency,
+			cint(subscription_doc.repeat_on_day)))
 
-	def on_recurring(self, reference_doc):
-		mcount = month_map[reference_doc.recurring_type]
-		self.set("delivery_date", get_next_date(reference_doc.delivery_date, mcount,
-						cint(reference_doc.repeat_on_day_of_month)))
+		for d in self.get("items"):
+			reference_delivery_date = frappe.db.get_value("Sales Order Item",
+				{"parent": reference_doc.name, "item_code": d.item_code, "idx": d.idx}, "delivery_date")
+
+			d.set("delivery_date",
+				get_next_schedule_date(reference_delivery_date, subscription_doc.frequency, cint(subscription_doc.repeat_on_day)))
 
 def get_list_context(context=None):
 	from erpnext.controllers.website_list_for_contact import get_list_context
@@ -408,6 +425,33 @@ def make_material_request(source_name, target_doc=None):
 	return doc
 
 @frappe.whitelist()
+def make_project(source_name, target_doc=None):
+	def postprocess(source, doc):
+		doc.project_type = "External"
+		doc.project_name = source.name
+
+	doc = get_mapped_doc("Sales Order", source_name, {
+		"Sales Order": {
+			"doctype": "Project",
+			"validation": {
+				"docstatus": ["=", 1]
+			},
+			"field_map":{
+				"name" : "sales_order",
+				"base_grand_total" : "estimated_costing",
+			}
+		},
+		"Sales Order Item": {
+			"doctype": "Project Task",
+			"field_map": {
+				"description": "title",
+			},
+		}
+	}, target_doc, postprocess)
+
+	return doc
+
+@frappe.whitelist()
 def make_delivery_note(source_name, target_doc=None):
 	def set_missing_values(source, target):
 		if source.po_no:
@@ -421,6 +465,11 @@ def make_delivery_note(source_name, target_doc=None):
 		target.ignore_pricing_rule = 1
 		target.run_method("set_missing_values")
 		target.run_method("calculate_taxes_and_totals")
+		
+		# set company address
+		target.update(get_company_address(target.company))
+		if target.company_address:
+			target.update(get_fetch_values("Delivery Note", 'company_address', target.company_address))
 
 	def update_item(source, target, source_parent):
 		target.base_amount = (flt(source.qty) - flt(source.delivered_qty)) * flt(source.base_rate)
@@ -474,6 +523,11 @@ def make_sales_invoice(source_name, target_doc=None, ignore_permissions=False):
 		target.flags.ignore_permissions = True
 		target.run_method("set_missing_values")
 		target.run_method("calculate_taxes_and_totals")
+
+		# set company address
+		target.update(get_company_address(target.company))
+		if target.company_address:
+			target.update(get_fetch_values("Sales Invoice", 'company_address', target.company_address))
 
 	def update_item(source, target, source_parent):
 		target.amount = flt(source.amount) - flt(source.billed_amt)
@@ -579,12 +633,18 @@ def get_events(start, end, filters=None):
 	from frappe.desk.calendar import get_event_conditions
 	conditions = get_event_conditions("Sales Order", filters)
 
-	data = frappe.db.sql("""select name, customer_name, delivery_status, billing_status, delivery_date
-		from `tabSales Order`
-		where (ifnull(delivery_date, '0000-00-00')!= '0000-00-00') \
-				and (delivery_date between %(start)s and %(end)s)
-				and docstatus < 2
-				{conditions}
+	data = frappe.db.sql("""
+		select
+			`tabSales Order`.name, `tabSales Order`.customer_name, `tabSales Order`.status,
+			`tabSales Order`.delivery_status, `tabSales Order`.billing_status,
+			`tabSales Order Item`.delivery_date
+		from
+			`tabSales Order`, `tabSales Order Item`
+		where `tabSales Order`.name = `tabSales Order Item`.parent
+			and (ifnull(`tabSales Order Item`.delivery_date, '0000-00-00')!= '0000-00-00') \
+			and (`tabSales Order Item`.delivery_date between %(start)s and %(end)s)
+			and `tabSales Order`.docstatus < 2
+			{conditions}
 		""".format(conditions=conditions), {
 			"start": start,
 			"end": end
@@ -624,7 +684,7 @@ def make_purchase_order_for_drop_shipment(source_name, for_supplier, target_doc=
 		target.run_method("calculate_taxes_and_totals")
 
 	def update_item(source, target, source_parent):
-		target.schedule_date = source_parent.delivery_date
+		target.schedule_date = source.delivery_date
 		target.qty = flt(source.qty) - flt(source.ordered_qty)
 		target.stock_qty = (flt(source.qty) - flt(source.ordered_qty)) * flt(source.conversion_factor)
 
@@ -719,3 +779,10 @@ def make_production_orders(items, sales_order, company, project=None):
 def update_status(status, name):
 	so = frappe.get_doc("Sales Order", name)
 	so.update_status(status)
+
+def get_default_bom_item(item_code):
+	bom = frappe.get_all('BOM', dict(item=item_code, is_active=True),
+			order_by='is_default desc')
+	bom = bom[0].name if bom else None
+
+	return bom

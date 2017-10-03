@@ -4,7 +4,7 @@
 from __future__ import unicode_literals
 import frappe
 from frappe import _
-from frappe.utils import flt, getdate
+from frappe.utils import flt, cint, getdate
 
 def execute(filters=None):
 	if not filters: filters = {}
@@ -13,11 +13,18 @@ def execute(filters=None):
 
 	columns = get_columns()
 	item_map = get_item_details(filters)
+	item_reorder_detail_map = get_item_reorder_details(filters)
 	iwb_map = get_item_warehouse_map(filters)
 
 	data = []
 	for (company, item, warehouse) in sorted(iwb_map):
 		qty_dict = iwb_map[(company, item, warehouse)]
+		item_reorder_level = 0
+		item_reorder_qty = 0
+		if item + warehouse in item_reorder_detail_map:
+			item_reorder_level = item_reorder_detail_map[item + warehouse]["warehouse_reorder_level"]
+			item_reorder_qty = item_reorder_detail_map[item + warehouse]["warehouse_reorder_qty"]
+			
 		data.append([item, item_map[item]["item_name"],
 			item_map[item]["item_group"],
 			item_map[item]["brand"],
@@ -27,6 +34,8 @@ def execute(filters=None):
 			qty_dict.in_val, qty_dict.out_qty,
 			qty_dict.out_val, qty_dict.bal_qty,
 			qty_dict.bal_val, qty_dict.val_rate,
+			item_reorder_level,
+			item_reorder_qty,
 			company
 		])
 
@@ -52,6 +61,8 @@ def get_columns():
 		_("Balance Qty")+":Float:100",
 		_("Balance Value")+":Float:100",
 		_("Valuation Rate")+":Float:90",
+		_("Reorder Level")+":Float:80",
+		_("Reorder Qty")+":Float:80",
 		_("Company")+":Link/Company:100"
 	]
 
@@ -158,8 +169,9 @@ def filter_items_with_no_transactions(iwb_map):
 		qty_dict = iwb_map[(company, item, warehouse)]
 		
 		no_transactions = True
+		float_precision = cint(frappe.db.get_default("float_precision")) or 3
 		for key, val in qty_dict.items():
-			val = flt(val, 3)
+			val = flt(val, float_precision)
 			qty_dict[key] = val
 			if key != "val_rate" and val:
 				no_transactions = False
@@ -179,7 +191,19 @@ def get_item_details(filters):
 	items = frappe.db.sql("""select name, item_name, stock_uom, item_group, brand, description
 		from tabItem {condition}""".format(condition=condition), value, as_dict=1)
 
-	return dict((d.name, d) for d in items)
+	return dict((d.name , d) for d in items)
+
+def get_item_reorder_details(filters):
+	condition = ''
+	value = ()
+	if filters.get("item_code"):
+		condition = "where parent=%s"
+		value = (filters.get("item_code"),)
+
+	item_reorder_details = frappe.db.sql("""select parent,warehouse,warehouse_reorder_qty,warehouse_reorder_level
+		from `tabItem Reorder` {condition}""".format(condition=condition), value, as_dict=1)
+
+	return dict((d.parent + d.warehouse, d) for d in item_reorder_details)
 
 def validate_filters(filters):
 	if not (filters.get("item_code") or filters.get("warehouse")):

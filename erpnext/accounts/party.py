@@ -7,13 +7,16 @@ import frappe
 import datetime
 from frappe import _, msgprint, scrub
 from frappe.defaults import get_user_permissions
-from frappe.utils import add_days, getdate, formatdate, get_first_day, date_diff, \
-	add_years, get_timestamp, nowdate, flt
-from frappe.geo.doctype.address.address import get_address_display, get_default_address
-from frappe.email.doctype.contact.contact import get_contact_details, get_default_contact
-from erpnext.exceptions import PartyFrozen, InvalidCurrency, PartyDisabled, InvalidAccountCurrency
+from frappe.model.utils import get_fetch_values
+from frappe.utils import (add_days, getdate, formatdate, get_first_day, date_diff,
+	add_years, get_timestamp, nowdate, flt)
+from frappe.contacts.doctype.address.address import (get_address_display,
+	get_default_address, get_company_address)
+from frappe.contacts.doctype.contact.contact import get_contact_details, get_default_contact
+from erpnext.exceptions import PartyFrozen, PartyDisabled, InvalidAccountCurrency
 from erpnext.accounts.utils import get_fiscal_year
-from erpnext import get_default_currency
+from erpnext import get_default_currency, get_company_currency
+
 
 class DuplicatePartyAccountError(frappe.ValidationError): pass
 
@@ -41,8 +44,9 @@ def _get_party_details(party=None, account=None, party_type="Customer", company=
 		frappe.throw(_("Not permitted for {0}").format(party), frappe.PermissionError)
 
 	party = frappe.get_doc(party_type, party)
+	currency = party.default_currency if party.default_currency else get_company_currency(company)
 
-	set_address_details(out, party, party_type)
+	set_address_details(out, party, party_type, doctype, company)
 	set_contact_details(out, party, party_type)
 	set_other_values(out, party, party_type)
 	set_price_list(out, party, party_type, price_list)
@@ -60,10 +64,11 @@ def _get_party_details(party=None, account=None, party_type="Customer", company=
 
 	return out
 
-def set_address_details(out, party, party_type):
+def set_address_details(out, party, party_type, doctype=None, company=None):
 	billing_address_field = "customer_address" if party_type == "Lead" \
 		else party_type.lower() + "_address"
 	out[billing_address_field] = get_default_address(party_type, party.name)
+	out.update(get_fetch_values(doctype, billing_address_field, out[billing_address_field]))
 
 	# address display
 	out.address_display = get_address_display(out[billing_address_field])
@@ -72,6 +77,12 @@ def set_address_details(out, party, party_type):
 	if party_type in ["Customer", "Lead"]:
 		out.shipping_address_name = get_default_address(party_type, party.name, 'is_shipping_address')
 		out.shipping_address = get_address_display(out["shipping_address_name"])
+		out.update(get_fetch_values(doctype, 'shipping_address_name', out.shipping_address_name))
+
+	if doctype and doctype in ['Delivery Note', 'Sales Invoice']:
+		out.update(get_company_address(company))
+		if out.company_address:
+			out.update(get_fetch_values(doctype, 'company_address', out.company_address))
 
 def set_contact_details(out, party, party_type):
 	out.contact_person = get_default_contact(party_type, party.name)
@@ -264,6 +275,7 @@ def get_due_date(posting_date, party_type, party, company):
 	return due_date
 
 def get_credit_days(party_type, party, company):
+	credit_days = 0
 	if party_type and party:
 		if party_type == "Customer":
 			credit_days_based_on, credit_days, customer_group = \
@@ -273,14 +285,16 @@ def get_credit_days(party_type, party, company):
 				frappe.db.get_value(party_type, party, ["credit_days_based_on", "credit_days", "supplier_type"])
 
 	if not credit_days_based_on:
-		if party_type == "Customer":
+		if party_type == "Customer" and customer_group:
 			credit_days_based_on, credit_days = \
-				frappe.db.get_value("Customer Group", customer_group, ["credit_days_based_on", "credit_days"]) \
-				or frappe.db.get_value("Company", company, ["credit_days_based_on", "credit_days"])
-		else:
+				frappe.db.get_value("Customer Group", customer_group, ["credit_days_based_on", "credit_days"])
+		elif party_type == "Supplier" and supplier_type:
 			credit_days_based_on, credit_days = \
-				frappe.db.get_value("Supplier Type", supplier_type, ["credit_days_based_on", "credit_days"])\
-				or frappe.db.get_value("Company", company, ["credit_days_based_on", "credit_days"] )
+				frappe.db.get_value("Supplier Type", supplier_type, ["credit_days_based_on", "credit_days"])
+
+	if not credit_days_based_on:
+		credit_days_based_on, credit_days = \
+			frappe.db.get_value("Company", company, ["credit_days_based_on", "credit_days"])
 
 	return credit_days_based_on, credit_days
 
@@ -306,10 +320,14 @@ def set_taxes(party, party_type, posting_date, company, customer_group=None, sup
 	from erpnext.accounts.doctype.tax_rule.tax_rule import get_tax_template, get_party_details
 	args = {
 		party_type.lower(): party,
-		"customer_group":	customer_group,
-		"supplier_type":	supplier_type,
 		"company":			company
 	}
+
+	if customer_group:
+		args['customer_group'] = customer_group
+
+	if supplier_type:
+		args['supplier_type'] = supplier_type
 
 	if billing_address or shipping_address:
 		args.update(get_party_details(party, party_type, {"billing_address": billing_address, \
@@ -363,26 +381,28 @@ def get_timeline_data(doctype, name):
 		out.update({ timestamp: count })
 
 	return out
-	
+
 def get_dashboard_info(party_type, party):
 	current_fiscal_year = get_fiscal_year(nowdate(), as_dict=True)
-	party_account_currency = get_party_account_currency(party_type, party, frappe.db.get_default("company"))
-	company_default_currency = get_default_currency()
-		
+	company = frappe.db.get_default("company") or frappe.get_all("Company")[0].name
+	party_account_currency = get_party_account_currency(party_type, party, company)
+	company_default_currency = get_default_currency() \
+		or frappe.db.get_value('Company', company, 'default_currency')
+
 	if party_account_currency==company_default_currency:
 		total_field = "base_grand_total"
 	else:
 		total_field = "grand_total"
-		
+
 	doctype = "Sales Invoice" if party_type=="Customer" else "Purchase Invoice"
-	
+
 	billing_this_year = frappe.db.sql("""
 		select sum({0})
 		from `tab{1}`
 		where {2}=%s and docstatus=1 and posting_date between %s and %s
-	""".format(total_field, doctype, party_type.lower()), 
+	""".format(total_field, doctype, party_type.lower()),
 	(party, current_fiscal_year.year_start_date, current_fiscal_year.year_end_date))
-		
+
 	total_unpaid = frappe.db.sql("""
 		select sum(debit_in_account_currency) - sum(credit_in_account_currency)
 		from `tabGL Entry`
@@ -394,5 +414,5 @@ def get_dashboard_info(party_type, party):
 	info["total_unpaid"] = flt(total_unpaid[0][0]) if total_unpaid else 0
 	if party_type == "Supplier":
 		info["total_unpaid"] = -1 * info["total_unpaid"]
-	
+
 	return info

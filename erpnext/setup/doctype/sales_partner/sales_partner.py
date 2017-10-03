@@ -5,7 +5,7 @@ from __future__ import unicode_literals
 import frappe
 from frappe.utils import cstr, filter_strip_join
 from frappe.website.website_generator import WebsiteGenerator
-from frappe.geo.address_and_contact import load_address_and_contact
+from frappe.contacts.address_and_contact import load_address_and_contact
 
 class SalesPartner(WebsiteGenerator):
 	website = frappe._dict(
@@ -16,7 +16,7 @@ class SalesPartner(WebsiteGenerator):
 
 	def onload(self):
 		"""Load address and contacts in `__onload`"""
-		load_address_and_contact(self, "sales_partner")
+		load_address_and_contact(self)
 
 	def autoname(self):
 		self.name = self.partner_name

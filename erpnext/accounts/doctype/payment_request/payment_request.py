@@ -11,6 +11,7 @@ from erpnext.accounts.party import get_party_account
 from erpnext.accounts.utils import get_account_currency
 from erpnext.accounts.doctype.payment_entry.payment_entry import get_payment_entry, get_company_defaults
 from frappe.integrations.utils import get_payment_gateway_controller
+from frappe.utils.background_jobs import enqueue
 
 class PaymentRequest(Document):
 	def validate(self):
@@ -34,15 +35,16 @@ class PaymentRequest(Document):
 
 	def on_submit(self):
 		send_mail = True
-		self.make_communication_entry()
 		ref_doc = frappe.get_doc(self.reference_doctype, self.reference_name)
 
-		if hasattr(ref_doc, "order_type") and getattr(ref_doc, "order_type") == "Shopping Cart":
+		if (hasattr(ref_doc, "order_type") and getattr(ref_doc, "order_type") == "Shopping Cart") \
+			or self.flags.mute_email:
 			send_mail = False
 
-		if send_mail and not self.flags.mute_email:
+		if send_mail:
 			self.set_payment_request_url()
 			self.send_email()
+			self.make_communication_entry()
 
 	def on_cancel(self):
 		self.check_if_payment_entry_exists()
@@ -50,7 +52,7 @@ class PaymentRequest(Document):
 
 	def make_invoice(self):
 		ref_doc = frappe.get_doc(self.reference_doctype, self.reference_name)
-		if hasattr(ref_doc, "order_type") and getattr(ref_doc, "order_type") == "Shopping Cart":
+		if (hasattr(ref_doc, "order_type") and getattr(ref_doc, "order_type") == "Shopping Cart"):
 			from erpnext.selling.doctype.sales_order.sales_order import make_sales_invoice
 			si = make_sales_invoice(self.reference_name, ignore_permissions=True)
 			si = si.insert(ignore_permissions=True)
@@ -67,16 +69,19 @@ class PaymentRequest(Document):
 			self.db_set('status', 'Initiated')
 
 	def get_payment_url(self):
-		data = frappe.db.get_value(self.reference_doctype, self.reference_name,
-			["company", "customer_name"], as_dict=1)
+		if self.reference_doctype != "Fees":
+			data = frappe.db.get_value(self.reference_doctype, self.reference_name, ["company", "customer_name"], as_dict=1)
+		else:
+			data = frappe.db.get_value(self.reference_doctype, self.reference_name, ["student_name"], as_dict=1)
+			data.update({"company": frappe.defaults.get_defaults().company})
 
 		controller = get_payment_gateway_controller(self.payment_gateway)
 		controller.validate_transaction_currency(self.currency)
 
 		return controller.get_payment_url(**{
 			"amount": flt(self.grand_total, self.precision("grand_total")),
-			"title": data.company,
-			"description": self.subject,
+			"title": data.company.encode("utf-8"),
+			"description": self.subject.encode("utf-8"),
 			"reference_doctype": "Payment Request",
 			"reference_docname": self.name,
 			"payer_email": self.email_to or frappe.session.user,
@@ -142,9 +147,15 @@ class PaymentRequest(Document):
 
 	def send_email(self):
 		"""send email with payment link"""
-		frappe.sendmail(recipients=self.email_to, sender=None, subject=self.subject,
-			message=self.get_message(), attachments=[frappe.attach_print(self.reference_doctype,
-			self.reference_name, file_name=self.reference_name, print_format=self.print_format)])
+		email_args = {
+			"recipients": self.email_to,
+			"sender": None,
+			"subject": self.subject,
+			"message": self.get_message(),
+			"now": True,
+			"attachments": [frappe.attach_print(self.reference_doctype, self.reference_name,
+				file_name=self.reference_name, print_format=self.print_format)]}
+		enqueue(method=frappe.sendmail, queue='short', timeout=300, async=True, **email_args)
 
 	def get_message(self):
 		"""return message with payment gateway link"""
@@ -216,12 +227,9 @@ def make_payment_request(**args):
 	"""Make payment request"""
 
 	args = frappe._dict(args)
-
 	ref_doc = frappe.get_doc(args.dt, args.dn)
-
-	gateway_account = get_gateway_details(args) or frappe._dict()
-
 	grand_total = get_amount(ref_doc, args.dt)
+	gateway_account = get_gateway_details(args) or frappe._dict()
 
 	existing_payment_request = frappe.db.get_value("Payment Request",
 		{"reference_doctype": args.dt, "reference_name": args.dn, "docstatus": ["!=", 2]})
@@ -244,22 +252,19 @@ def make_payment_request(**args):
 			"reference_name": args.dn
 		})
 
-		if args.return_doc:
-			return pr
-
-		if args.mute_email:
+		if args.order_type == "Shopping Cart" or args.mute_email:
 			pr.flags.mute_email = True
 
 		if args.submit_doc:
 			pr.insert(ignore_permissions=True)
 			pr.submit()
 
-	if hasattr(ref_doc, "order_type") and getattr(ref_doc, "order_type") == "Shopping Cart":
+	if args.order_type == "Shopping Cart":
 		frappe.db.commit()
 		frappe.local.response["type"] = "redirect"
 		frappe.local.response["location"] = pr.get_payment_url()
 
-	if not args.cart:
+	if args.return_doc:
 		return pr
 
 	return pr.as_dict()
@@ -274,6 +279,9 @@ def get_amount(ref_doc, dt):
 			grand_total = flt(ref_doc.outstanding_amount)
 		else:
 			grand_total = flt(ref_doc.outstanding_amount) / ref_doc.conversion_rate
+
+	if dt == "Fees":
+		grand_total = ref_doc.outstanding_amount
 
 	if grand_total > 0 :
 		return grand_total

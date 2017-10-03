@@ -2,9 +2,10 @@
 # For license information, please see license.txt
 
 from __future__ import unicode_literals
-import frappe
+import frappe, erpnext
 from frappe import _
 from frappe.utils import flt
+from frappe.model.meta import get_field_precision
 from frappe.model.document import Document
 from erpnext.stock.doctype.serial_no.serial_no import get_serial_nos
 
@@ -14,7 +15,7 @@ class LandedCostVoucher(Document):
 		for pr in self.get("purchase_receipts"):
 			if pr.receipt_document_type and pr.receipt_document:
 				pr_items = frappe.db.sql("""select pr_item.item_code, pr_item.description,
-					pr_item.qty, pr_item.base_rate, pr_item.base_amount, pr_item.name
+					pr_item.qty, pr_item.base_rate, pr_item.base_amount, pr_item.name, pr_item.cost_center
 					from `tab{doctype} Item` pr_item where parent = %s
 					and exists(select name from tabItem where name = pr_item.item_code and is_stock_item = 1)
 					""".format(doctype=pr.receipt_document_type), pr.receipt_document, as_dict=True)
@@ -25,6 +26,8 @@ class LandedCostVoucher(Document):
 					item.description = d.description
 					item.qty = d.qty
 					item.rate = d.base_rate
+					item.cost_center = d.cost_center or \
+						erpnext.get_default_cost_center(self.company)
 					item.amount = d.base_amount
 					item.receipt_document_type = pr.receipt_document_type
 					item.receipt_document = pr.receipt_document
@@ -60,6 +63,10 @@ class LandedCostVoucher(Document):
 				frappe.throw(_("Item Row {idx}: {doctype} {docname} does not exist in above '{doctype}' table")
 					.format(idx=item.idx, doctype=item.receipt_document_type, docname=item.receipt_document))
 
+			if not item.cost_center:
+				frappe.throw(_("Row {0}: Cost center is required for an item {1}")
+					.format(item.idx, item.item_code))
+
 	def set_total_taxes_and_charges(self):
 		self.total_taxes_and_charges = sum([flt(d.amount) for d in self.get("taxes")])
 
@@ -71,7 +78,17 @@ class LandedCostVoucher(Document):
 		if not total:
 			frappe.throw(_("Total {0} for all items is zero, may be you should change 'Distribute Charges Based On'").format(based_on))
 		
-		if self.total_taxes_and_charges != sum([flt(d.applicable_charges) for d in self.get("items")]):
+		total_applicable_charges = sum([flt(d.applicable_charges) for d in self.get("items")])
+
+		precision = get_field_precision(frappe.get_meta("Landed Cost Item").get_field("applicable_charges"),
+		currency=frappe.db.get_value("Company", self.company, "default_currency", cache=True))
+
+		diff = flt(self.total_taxes_and_charges) - flt(total_applicable_charges)
+		diff = flt(diff, precision)
+
+		if abs(diff) < (2.0 / (10**precision)):
+			self.items[-1].applicable_charges += diff
+		else:
 			frappe.throw(_("Total Applicable Charges in Purchase Receipt Items table must be same as Total Taxes and Charges"))
 
 

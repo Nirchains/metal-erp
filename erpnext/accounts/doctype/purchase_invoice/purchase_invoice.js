@@ -46,6 +46,12 @@ erpnext.accounts.PurchaseInvoice = erpnext.buying.BuyingController.extend({
 				cur_frm.add_custom_button(__('Return / Debit Note'),
 					this.make_debit_note, __("Make"));
 			}
+
+			if(!doc.subscription) {
+				cur_frm.add_custom_button(__('Subscription'), function() {
+					erpnext.utils.make_subscription(doc.doctype, doc.name)
+				}, __("Make"))
+			}
 		}
 
 		if(doc.docstatus===0) {
@@ -78,7 +84,7 @@ erpnext.accounts.PurchaseInvoice = erpnext.buying.BuyingController.extend({
 					},
 					get_query_filters: {
 						docstatus: 1,
-						status: ["!=", "Closed"],
+						status: ["not in", ["Closed", "Completed"]],
 						company: me.frm.doc.company,
 						is_return: 0
 					}
@@ -101,8 +107,8 @@ erpnext.accounts.PurchaseInvoice = erpnext.buying.BuyingController.extend({
 				account: this.frm.doc.credit_to,
 				price_list: this.frm.doc.buying_price_list,
 			}, function() {
-			me.apply_pricing_rule();
-		})
+				me.apply_pricing_rule();
+			})
 	},
 
 	credit_to: function() {
@@ -130,7 +136,7 @@ erpnext.accounts.PurchaseInvoice = erpnext.buying.BuyingController.extend({
 		if(cint(this.frm.doc.is_paid)) {
 			if(!this.frm.doc.company) {
 				this.frm.set_value("is_paid", 0)
-				msgprint(__("Please specify Company to proceed"));
+				frappe.msgprint(__("Please specify Company to proceed"));
 			}
 		}
 		this.calculate_outstanding_amount();
@@ -195,19 +201,19 @@ cur_frm.script_manager.make(erpnext.accounts.PurchaseInvoice);
 // Hide Fields
 // ------------
 function hide_fields(doc) {
-	parent_fields = ['due_date', 'is_opening', 'advances_section', 'from_date', 'to_date'];
+	var parent_fields = ['due_date', 'is_opening', 'advances_section', 'from_date', 'to_date'];
 
 	if(cint(doc.is_paid) == 1) {
 		hide_field(parent_fields);
 	} else {
-		for (i in parent_fields) {
+		for (var i in parent_fields) {
 			var docfield = frappe.meta.docfield_map[doc.doctype][parent_fields[i]];
 			if(!docfield.hidden) unhide_field(parent_fields[i]);
 		}
 
 	}
 
-	item_fields_stock = ['warehouse_section', 'received_qty', 'rejected_qty'];
+	var item_fields_stock = ['warehouse_section', 'received_qty', 'rejected_qty'];
 
 	cur_frm.fields_dict['items'].grid.set_column_disp(item_fields_stock,
 		(cint(doc.update_stock)==1 || cint(doc.is_return)==1 ? true : false));
@@ -224,9 +230,9 @@ cur_frm.fields_dict.cash_bank_account.get_query = function(doc) {
 	return {
 		filters: [
 			["Account", "account_type", "in", ["Cash", "Bank"]],
-			["Account", "root_type", "=", "Asset"],
 			["Account", "is_group", "=",0],
-			["Account", "company", "=", doc.company]
+			["Account", "company", "=", doc.company],
+			["Account", "report_type", "=", "Balance Sheet"]
 		]
 	}
 }
@@ -343,6 +349,7 @@ frappe.ui.form.on("Purchase Invoice", {
 			'Payment Entry': 'Payment'
 		}
 	},
+
 	onload: function(frm) {
 		$.each(["warehouse", "rejected_warehouse"], function(i, field) {
 			frm.set_query(field, "items", function() {
@@ -370,5 +377,5 @@ frappe.ui.form.on("Purchase Invoice", {
 			erpnext.buying.get_default_bom(frm);
 		}
 		frm.toggle_reqd("supplier_warehouse", frm.doc.is_subcontracted==="Yes");
-	}
+	},
 })

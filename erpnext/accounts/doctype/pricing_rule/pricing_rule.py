@@ -185,7 +185,7 @@ def get_pricing_rule_for_item(args):
 				"discount_percentage": 0.0
 			})
 		else:
-			item_details.discount_percentage = pricing_rule.discount_percentage
+			item_details.discount_percentage = pricing_rule.discount_percentage or args.discount_percentage
 	elif args.get('pricing_rule'):
 		item_details = remove_pricing_rule_for_item(args.get("pricing_rule"), item_details)
 
@@ -285,8 +285,9 @@ def get_pricing_rules(args):
 
 def filter_pricing_rules(args, pricing_rules):
 	# filter for qty
-	stock_qty = args.get('qty') * args.get('conversion_factor', 1)
 	if pricing_rules:
+		stock_qty = flt(args.get('qty')) * args.get('conversion_factor', 1)
+
 		pricing_rules = filter(lambda x: (flt(stock_qty)>=flt(x.min_qty)
 			and (flt(stock_qty)<=x.max_qty if x.max_qty else True)), pricing_rules)
 

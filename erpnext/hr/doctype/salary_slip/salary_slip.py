@@ -11,6 +11,7 @@ from frappe import msgprint, _
 from erpnext.hr.doctype.process_payroll.process_payroll import get_start_end_dates
 from erpnext.hr.doctype.employee.employee import get_holiday_list_for_employee
 from erpnext.utilities.transaction_base import TransactionBase
+from frappe.utils.background_jobs import enqueue
 
 class SalarySlip(TransactionBase):
 	def autoname(self):
@@ -75,13 +76,15 @@ class SalarySlip(TransactionBase):
 
 	def eval_condition_and_formula(self, d, data):
 		try:
-			if d.condition:
-				if not frappe.safe_eval(d.condition, None, data):
+			condition = d.condition.strip() if d.condition else None
+			if condition:
+				if not frappe.safe_eval(condition, None, data):
 					return None
 			amount = d.amount
 			if d.amount_based_on_formula:
-				if d.formula:
-					amount = frappe.safe_eval(d.formula, None, data)
+				formula = d.formula.strip() if d.formula else None
+				if formula:
+					amount = frappe.safe_eval(formula, None, data)
 			if amount:
 				data[d.abbr] = amount
 
@@ -91,7 +94,7 @@ class SalarySlip(TransactionBase):
 			frappe.throw(_("Name error: {0}".format(err)))
 		except SyntaxError as err:
 			frappe.throw(_("Syntax error in formula or condition: {0}".format(err)))
-		except Exception, e:
+		except Exception as e:
 			frappe.throw(_("Error in formula or condition: {0}".format(e)))
 			raise
 
@@ -228,12 +231,12 @@ class SalarySlip(TransactionBase):
 
 		holidays = self.get_holidays_for_employee(self.start_date, self.end_date)
 		working_days = date_diff(self.end_date, self.start_date) + 1
+		actual_lwp = self.calculate_lwp(holidays, working_days)
 		if not cint(frappe.db.get_value("HR Settings", None, "include_holidays_in_total_working_days")):
 			working_days -= len(holidays)
 			if working_days < 0:
 				frappe.throw(_("There are more holidays than working days this month."))
 
-		actual_lwp = self.calculate_lwp(holidays, working_days)
 		if not lwp:
 			lwp = actual_lwp
 		elif lwp != actual_lwp:
@@ -330,11 +333,18 @@ class SalarySlip(TransactionBase):
 			frappe.throw(_("Please set the Date Of Joining for employee {0}").format(frappe.bold(self.employee_name)))
 
 		for d in self.get(component_type):
-			if self.salary_structure and ((cint(d.depends_on_lwp) == 1 and not self.salary_slip_based_on_timesheet) or\
-			getdate(self.start_date) < joining_date or getdate(self.end_date) > relieving_date):
+			if (self.salary_structure and
+				cint(d.depends_on_lwp) and
+				(not
+				    self.salary_slip_based_on_timesheet or
+					getdate(self.start_date) < joining_date or
+					getdate(self.end_date) > relieving_date
+				)):
 
-				d.amount = rounded((flt(d.default_amount) * flt(self.payment_days)
-					/ cint(self.total_working_days)), self.precision("amount", component_type))
+				d.amount = rounded(
+					(flt(d.default_amount) * flt(self.payment_days)
+					/ cint(self.total_working_days)), self.precision("amount", component_type)
+				)
 			elif not self.payment_days and not self.salary_slip_based_on_timesheet:
 				d.amount = 0
 			elif not d.amount:
@@ -387,9 +397,15 @@ class SalarySlip(TransactionBase):
 		receiver = frappe.db.get_value("Employee", self.employee, "prefered_email")
 
 		if receiver:
-			subj = 'Salary Slip - from {0} to {1}'.format(self.start_date, self.end_date)
-			frappe.sendmail([receiver], subject=subj, message = _("Please see attachment"),
-				attachments=[frappe.attach_print(self.doctype, self.name, file_name=self.name)], reference_doctype= self.doctype, reference_name= self.name)
+			email_args = {
+				"recipients": [receiver],
+				"message": _("Please see attachment"),
+				"subject": 'Salary Slip - from {0} to {1}'.format(self.start_date, self.end_date),
+				"attachments": [frappe.attach_print(self.doctype, self.name, file_name=self.name)],
+				"reference_doctype": self.doctype,
+				"reference_name": self.name
+				}
+			enqueue(method=frappe.sendmail, queue='short', timeout=300, async=True, **email_args)
 		else:
 			msgprint(_("{0}: Employee email not found, hence email not sent").format(self.employee_name))
 
