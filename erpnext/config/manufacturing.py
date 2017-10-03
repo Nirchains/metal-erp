@@ -53,6 +53,11 @@ def get_data():
 				},
 				{
 					"type": "doctype",
+					"name": "Plantilla de grupo de productos",
+					"description": _("Plantilla de grupo de productos."),
+				},
+				{
+					"type": "doctype",
 					"name": "Workstation",
 					"description": _("Where manufacturing operations are carried."),
 				},
@@ -61,6 +66,30 @@ def get_data():
 					"name": "Operation",
 					"description": _("Details of the operations carried out."),
 				},
+				{
+					"type": "doctype",
+					"name": "Formato",
+					"description": _("Formatos."),
+					"label": _("Formatos")
+				},
+				{
+					"type": "doctype",
+					"name": "Brand",
+					"description": _("Marcas."),
+					"label": _("Marcas de productos")
+				},
+				{
+					"type": "doctype",
+					"name": "Acabado",
+					"description": _("Acabados."),
+					"label": _("Acabados de productos")
+				},
+				{
+					"type": "doctype",
+					"name": "Color",
+					"description": _("Colores."),
+					"label": _("Colores")
+				}
 
 			]
 		},
